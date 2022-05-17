@@ -1,10 +1,10 @@
-.PHONY: tearup
-tearup:
+.PHONY: test-setup
+test-setup:
 	@echo "+ $@"
 	docker-compose up -d
 
-.PHONY: teardown
-teardown:
+.PHONY: test-teardown
+test-teardown:
 	@echo "+ $@"
 	docker-compose rm -fsv
 
@@ -14,4 +14,4 @@ test-run:
 	go test -v -p 1 -race -coverprofile=coverage.txt -covermode=atomic ./...
 
 .PHONY: test
-test: tearup test-run teardown
+test: test-setup test-run test-teardown
