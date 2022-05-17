@@ -304,12 +304,14 @@ func (w *worker) removeJobFromInProgress(job *Job, fate terminateOp) {
 
 type terminateOp func(conn redis.Conn)
 
+// opType describes the type of terminateOp.
+// It's used to distinguish between terminateOp functions.
 type opType int
 
 const (
 	opTerminate = opType(iota)
-	opRetry     = opType(iota)
-	opDead      = opType(iota)
+	opRetry
+	opDead
 )
 
 func terminateOnly(_ redis.Conn) { return }
