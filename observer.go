@@ -93,10 +93,13 @@ func (o *observer) drain() {
 }
 
 func (o *observer) observeStarted(jobName, jobID string, arguments map[string]interface{}) {
-	argsJSON, err := json.Marshal(arguments)
+	var argsJSON []byte
+	var err error
 
-	if len(argsJSON) == 0 && err == nil {
+	if len(arguments) == 0 {
 		argsJSON = []byte("")
+	} else {
+		argsJSON, err = json.Marshal(arguments)
 	}
 
 	o.observationsChan <- &observation{
