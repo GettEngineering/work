@@ -20,13 +20,13 @@ require (
 	github.com/cihub/seelog v0.0.0-20170130134532-f561c5e57575 // indirect
 	github.com/customerio/gospec v0.0.0-20130710230057-a5cc0e48aa39 // indirect
 	github.com/davecgh/go-spew v1.1.0 // indirect
-	github.com/dchest/uniuri v0.0.0-20200228104902-7aecb25e1fe5 // indirect
+	github.com/dchest/uniuri v1.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.0 // indirect
-	github.com/garyburd/redigo v1.6.0 // indirect
-	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b // indirect
+	github.com/garyburd/redigo v1.6.4 // indirect
+	github.com/golang/glog v1.0.0 // indirect
 	github.com/kr/pretty v0.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/youtube/vitess v2.1.1+incompatible // indirect
-	golang.org/x/net v0.0.0-20200425230154-ff2c4b7c35a0 // indirect
+	golang.org/x/net v0.5.0 // indirect
 	gopkg.in/yaml.v2 v2.2.2 // indirect
 )
