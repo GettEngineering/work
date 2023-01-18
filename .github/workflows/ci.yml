@@ -24,8 +24,5 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: true
 
-      - name: Install Go tools
-        run: make lint-install
-
       - name: Run tests
         run: make test
