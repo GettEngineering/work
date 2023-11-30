@@ -267,6 +267,21 @@ func (w *worker) getUniqueJob(job *Job) *Job {
 		return nil
 	}
 
+	// This is a hack to fix the following problem.
+	// If a job is scheduled with a unique key (EnqueueUniqueInByKey), it's added in 2 places in redis:
+	// scheduled queue and under unique key.
+	// A requeuer loop calls a lua script, which extracts the job from the scheduled queue and
+	// puts it to the jobs queue. Also the script adds a new field to the json body of the job using cjson library.
+	// It encodes json with a different field order than the golang encoding/json.
+	// Later on, a worker loop moves the job from the jobs queue to the inprocess queue.
+	// The worker after processing the job, deletes the job from the inprocess queue and the unique key,
+	// but
+	// for deletion it uses rawJson from unique job received from unique key, which doesn't match the json body of the job
+	// in the inprocess queue. Without this hack we'd get memory leak in redis, because the job would never be deleted
+	// from the inprocess queue.
+	// NOTE: this field is used only to delete the job from the inprocess queue.
+	jobWithArgs.rawJSON = job.rawJSON
+
 	return jobWithArgs
 }
 
