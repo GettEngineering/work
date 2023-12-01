@@ -279,7 +279,12 @@ func (w *worker) getUniqueJob(job *Job) *Job {
 	// for deletion it uses rawJson from unique job received from unique key, which doesn't match the json body of the job
 	// in the inprocess queue. Without this hack we'd get memory leak in redis, because the job would never be deleted
 	// from the inprocess queue.
+	//
+	// EnqueueUniqueInByKey -> scheduled queue -> (json body is modified) -> jobs queue -> inprocess queue -> (handle job) -> delete from inprocess queue
+	//                      -> unique key                                                                                     using rawJson from unique key
+	//
 	// NOTE: this field is used only to delete the job from the inprocess queue.
+	// job.rawJSON is the original json body of the job coming from jobs queue.
 	jobWithArgs.rawJSON = job.rawJSON
 
 	return jobWithArgs
