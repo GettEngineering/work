@@ -141,6 +141,11 @@ func (w *worker) loop() {
 	}
 }
 
+// fetchJob returns a job, or nil if there are no jobs.
+// It looks for any of the registered jobs. As soon it finds one, it
+// extracts the job from the queue <namespace>:jobs:<jobName> and puts it to the queue
+// <namespace>:jobs:<jobName>:<poolID>:inprogress. For more details see redisLuaFetchJob lua script.
+// The found job is returned as a Job struct.
 func (w *worker) fetchJob() (*Job, error) {
 	// resort queues
 	// NOTE: we could optimize this to only resort every second, or something.
@@ -261,6 +266,26 @@ func (w *worker) getUniqueJob(job *Job) *Job {
 		logError("worker.get_unique_job.updated_job", err)
 		return nil
 	}
+
+	// This is a hack to fix the following problem.
+	// If a job is scheduled with a unique key (EnqueueUniqueInByKey), it's added in 2 places in redis:
+	// scheduled queue and under unique key.
+	// A requeuer loop calls a lua script, which extracts the job from the scheduled queue and
+	// puts it to the jobs queue. Also the script adds a new field to the json body of the job using cjson library.
+	// It encodes json with a different field order than the golang encoding/json.
+	// Later on, a worker loop moves the job from the jobs queue to the inprocess queue.
+	// The worker after processing the job, deletes the job from the inprocess queue and the unique key,
+	// but
+	// for deletion it uses rawJson from unique job received from unique key, which doesn't match the json body of the job
+	// in the inprocess queue. Without this hack we'd get memory leak in redis, because the job would never be deleted
+	// from the inprocess queue.
+	//
+	// EnqueueUniqueInByKey -> scheduled queue -> (json body is modified) -> jobs queue -> inprocess queue -> (handle job) -> delete from inprocess queue
+	//                      -> unique key                                                                                     using rawJson from unique key
+	//
+	// NOTE: this field is used only to delete the job from the inprocess queue.
+	// job.rawJSON is the original json body of the job coming from jobs queue.
+	jobWithArgs.rawJSON = job.rawJSON
 
 	return jobWithArgs
 }
