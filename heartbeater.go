@@ -1,12 +1,13 @@
 package work
 
 import (
+	"context"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
+	"github.com/GettEngineering/work/redis"
 )
 
 const (
@@ -16,7 +17,7 @@ const (
 type workerPoolHeartbeater struct {
 	workerPoolID string
 	namespace    string // eg, "myapp-work"
-	pool         *redis.Pool
+	redisAdapter redis.Redis
 	beatPeriod   time.Duration
 	concurrency  uint
 	jobNames     string
@@ -29,11 +30,18 @@ type workerPoolHeartbeater struct {
 	doneStoppingChan chan struct{}
 }
 
-func newWorkerPoolHeartbeater(namespace string, pool *redis.Pool, workerPoolID string, jobTypes map[string]*jobType, concurrency uint, workerIDs []string) *workerPoolHeartbeater {
+func newWorkerPoolHeartbeater(
+	namespace string,
+	redisAdapter redis.Redis,
+	workerPoolID string,
+	jobTypes map[string]*jobType,
+	concurrency uint,
+	workerIDs []string,
+) *workerPoolHeartbeater {
 	h := &workerPoolHeartbeater{
 		workerPoolID:     workerPoolID,
 		namespace:        namespace,
-		pool:             pool,
+		redisAdapter:     redisAdapter,
 		beatPeriod:       beatPeriod,
 		concurrency:      concurrency,
 		stopChan:         make(chan struct{}),
@@ -71,55 +79,63 @@ func (h *workerPoolHeartbeater) stop() {
 }
 
 func (h *workerPoolHeartbeater) loop() {
+	ctx := context.TODO()
+
 	h.startedAt = nowEpochSeconds()
-	h.heartbeat() // do it right away
+	h.heartbeat(ctx) // do it right away
 	ticker := time.Tick(h.beatPeriod)
 	for {
 		select {
 		case <-h.stopChan:
-			h.removeHeartbeat()
+			h.removeHeartbeat(ctx)
 			h.doneStoppingChan <- struct{}{}
 			return
 		case <-ticker:
-			h.heartbeat()
+			h.heartbeat(ctx)
 		}
 	}
 }
 
-func (h *workerPoolHeartbeater) heartbeat() {
-	conn := h.pool.Get()
-	defer conn.Close()
-
+func (h *workerPoolHeartbeater) heartbeat(ctx context.Context) {
 	workerPoolsKey := redisKeyWorkerPools(h.namespace)
 	heartbeatKey := redisKeyHeartbeat(h.namespace, h.workerPoolID)
 
-	conn.Send("SADD", workerPoolsKey, h.workerPoolID)
-	conn.Send("HMSET", heartbeatKey,
-		"heartbeat_at", nowEpochSeconds(),
-		"started_at", h.startedAt,
-		"job_names", h.jobNames,
-		"concurrency", h.concurrency,
-		"worker_ids", h.workerIDs,
-		"host", h.hostname,
-		"pid", h.pid,
-	)
-
-	if err := conn.Flush(); err != nil {
+	err := h.redisAdapter.WithPipeline(ctx, func(r redis.Redis) error {
+		if err := r.SAdd(ctx, workerPoolsKey, h.workerPoolID); err != nil {
+			return err
+		}
+		if err := r.HSet(ctx, heartbeatKey,
+			"heartbeat_at", nowEpochSeconds(),
+			"started_at", h.startedAt,
+			"job_names", h.jobNames,
+			"concurrency", h.concurrency,
+			"worker_ids", h.workerIDs,
+			"host", h.hostname,
+			"pid", h.pid,
+		); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		logError("heartbeat", err)
 	}
 }
 
-func (h *workerPoolHeartbeater) removeHeartbeat() {
-	conn := h.pool.Get()
-	defer conn.Close()
-
+func (h *workerPoolHeartbeater) removeHeartbeat(ctx context.Context) {
 	workerPoolsKey := redisKeyWorkerPools(h.namespace)
 	heartbeatKey := redisKeyHeartbeat(h.namespace, h.workerPoolID)
 
-	conn.Send("SREM", workerPoolsKey, h.workerPoolID)
-	conn.Send("DEL", heartbeatKey)
-
-	if err := conn.Flush(); err != nil {
+	err := h.redisAdapter.WithPipeline(ctx, func(r redis.Redis) error {
+		if err := r.SRem(ctx, workerPoolsKey, h.workerPoolID); err != nil {
+			return err
+		}
+		if err := r.Del(ctx, heartbeatKey); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		logError("remove_heartbeat", err)
 	}
 }

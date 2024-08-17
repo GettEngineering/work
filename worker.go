@@ -1,12 +1,14 @@
 package work
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"reflect"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
+	"github.com/GettEngineering/work/redis"
 )
 
 const fetchKeysPerJobType = 6
@@ -15,13 +17,13 @@ type worker struct {
 	workerID      string
 	poolID        string
 	namespace     string
-	pool          *redis.Pool
+	redisAdapter  redis.Redis
 	jobTypes      map[string]*jobType
 	sleepBackoffs []int64
 	middleware    []*middlewareHandler
 	contextType   reflect.Type
 
-	redisFetchScript *redis.Script
+	redisFetchScript redis.Script
 	sampler          prioritySampler
 	*observer
 
@@ -32,9 +34,17 @@ type worker struct {
 	doneDrainingChan chan struct{}
 }
 
-func newWorker(namespace string, poolID string, pool *redis.Pool, contextType reflect.Type, middleware []*middlewareHandler, jobTypes map[string]*jobType, sleepBackoffs []int64) *worker {
+func newWorker(
+	namespace string,
+	poolID string,
+	redisAdapter redis.Redis,
+	contextType reflect.Type,
+	middleware []*middlewareHandler,
+	jobTypes map[string]*jobType,
+	sleepBackoffs []int64,
+) *worker {
 	workerID := makeIdentifier()
-	ob := newObserver(namespace, pool, workerID)
+	ob := newObserver(namespace, redisAdapter, workerID)
 
 	if len(sleepBackoffs) == 0 {
 		sleepBackoffs = sleepBackoffsInMilliseconds
@@ -44,7 +54,7 @@ func newWorker(namespace string, poolID string, pool *redis.Pool, contextType re
 		workerID:      workerID,
 		poolID:        poolID,
 		namespace:     namespace,
-		pool:          pool,
+		redisAdapter:  redisAdapter,
 		contextType:   contextType,
 		sleepBackoffs: sleepBackoffs,
 
@@ -77,7 +87,7 @@ func (w *worker) updateMiddlewareAndJobTypes(middleware []*middlewareHandler, jo
 	}
 	w.sampler = sampler
 	w.jobTypes = jobTypes
-	w.redisFetchScript = redis.NewScript(len(jobTypes)*fetchKeysPerJobType, redisLuaFetchJob)
+	w.redisFetchScript = w.redisAdapter.NewScript(redisLuaFetchJob, len(jobTypes)*fetchKeysPerJobType)
 }
 
 func (w *worker) start() {
@@ -104,6 +114,8 @@ func (w *worker) loop() {
 	var drained bool
 	var consequtiveNoJobs int64
 
+	ctx := context.TODO()
+
 	// Begin immediately. We'll change the duration on each tick with a timer.Reset()
 	timer := time.NewTimer(0)
 	defer timer.Stop()
@@ -117,12 +129,12 @@ func (w *worker) loop() {
 			drained = true
 			timer.Reset(0)
 		case <-timer.C:
-			job, err := w.fetchJob()
+			job, err := w.fetchJob(ctx)
 			if err != nil {
 				logError("worker.fetch", err)
 				timer.Reset(10 * time.Millisecond)
 			} else if job != nil {
-				w.processJob(job)
+				w.processJob(ctx, job)
 				consequtiveNoJobs = 0
 				timer.Reset(0)
 			} else {
@@ -146,57 +158,67 @@ func (w *worker) loop() {
 // extracts the job from the queue <namespace>:jobs:<jobName> and puts it to the queue
 // <namespace>:jobs:<jobName>:<poolID>:inprogress. For more details see redisLuaFetchJob lua script.
 // The found job is returned as a Job struct.
-func (w *worker) fetchJob() (*Job, error) {
+func (w *worker) fetchJob(ctx context.Context) (*Job, error) {
 	// resort queues
 	// NOTE: we could optimize this to only resort every second, or something.
 	w.sampler.sample()
+
 	numKeys := len(w.sampler.samples) * fetchKeysPerJobType
-	var scriptArgs = make([]interface{}, 0, numKeys+1)
+	keys := make([]string, 0, numKeys)
 
 	for _, s := range w.sampler.samples {
-		scriptArgs = append(scriptArgs, s.redisJobs, s.redisJobsInProg, s.redisJobsPaused, s.redisJobsLock, s.redisJobsLockInfo, s.redisJobsMaxConcurrency) // KEYS[1-6 * N]
+		keys = append(
+			keys,
+			s.redisJobs,
+			s.redisJobsInProg,
+			s.redisJobsPaused,
+			s.redisJobsLock,
+			s.redisJobsLockInfo,
+			s.redisJobsMaxConcurrency,
+		) // KEYS[1-6 * N]
 	}
-	scriptArgs = append(scriptArgs, w.poolID) // ARGV[1]
-	conn := w.pool.Get()
-	defer conn.Close()
 
-	values, err := redis.Values(w.redisFetchScript.Do(conn, scriptArgs...))
-	if err == redis.ErrNil {
+	values, err := w.redisFetchScript.Run(
+		ctx,
+		keys,
+		w.poolID, // ARGV[1]
+	).Slice()
+	if errors.Is(err, redis.Nil) {
 		return nil, nil
 	} else if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("run fetch script: %w", err)
 	}
 
 	if len(values) != 3 {
 		return nil, fmt.Errorf("need 3 elements back")
 	}
 
-	rawJSON, ok := values[0].([]byte)
+	rawJSON, ok := convertToBytes(values[0])
 	if !ok {
-		return nil, fmt.Errorf("response msg not bytes")
+		return nil, fmt.Errorf("expected msg is []byte or string, got %T", values[0])
 	}
 
-	dequeuedFrom, ok := values[1].([]byte)
+	dequeuedFrom, ok := convertToBytes(values[1])
 	if !ok {
-		return nil, fmt.Errorf("response queue not bytes")
+		return nil, fmt.Errorf("expected queue is []byte or string, got %T", values[1])
 	}
 
-	inProgQueue, ok := values[2].([]byte)
+	inProgQueue, ok := convertToBytes(values[2])
 	if !ok {
-		return nil, fmt.Errorf("response in prog not bytes")
+		return nil, fmt.Errorf("expected inqueue is []byte or string, got %T", values[2])
 	}
 
 	job, err := newJob(rawJSON, dequeuedFrom, inProgQueue)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("new job: %w", err)
 	}
 
 	return job, nil
 }
 
-func (w *worker) processJob(job *Job) {
+func (w *worker) processJob(ctx context.Context, job *Job) {
 	if job.Unique {
-		updatedJob := w.getUniqueJob(job)
+		updatedJob := w.getUniqueJob(ctx, job)
 		// This is to support the old way of doing it, where we used the job off the queue and just deleted the unique key
 		// Going forward the job on the queue will always be just a placeholder, and we will be replacing it with the
 		// updated job extracted here
@@ -222,15 +244,15 @@ func (w *worker) processJob(job *Job) {
 		job.failed(runErr)
 		fate, op = w.jobFate(jt, job)
 	}
-	w.removeJobFromInProgress(job, fate)
+	w.removeJobFromInProgress(ctx, job, fate)
 
 	// Remove unique job after it has finished or has been put in dead queue.
 	if job.Unique && op != opRetry {
-		w.deleteUniqueJob(job)
+		w.deleteUniqueJob(ctx, job)
 	}
 }
 
-func (w *worker) getUniqueJob(job *Job) *Job {
+func (w *worker) getUniqueJob(ctx context.Context, job *Job) *Job {
 	var uniqueKey string
 	var err error
 
@@ -244,10 +266,7 @@ func (w *worker) getUniqueJob(job *Job) *Job {
 		}
 	}
 
-	conn := w.pool.Get()
-	defer conn.Close()
-
-	rawJSON, err := redis.Bytes(conn.Do("GET", uniqueKey))
+	rawJSON, err := w.redisAdapter.Get(ctx, uniqueKey).Bytes()
 	if err != nil {
 		logError("worker.get_unique_job.get", err)
 		return nil
@@ -290,7 +309,7 @@ func (w *worker) getUniqueJob(job *Job) *Job {
 	return jobWithArgs
 }
 
-func (w *worker) deleteUniqueJob(job *Job) {
+func (w *worker) deleteUniqueJob(ctx context.Context, job *Job) {
 	var uniqueKey string
 	var err error
 
@@ -304,30 +323,35 @@ func (w *worker) deleteUniqueJob(job *Job) {
 		}
 	}
 
-	conn := w.pool.Get()
-	defer conn.Close()
-
-	_, err = conn.Do("DEL", uniqueKey)
+	err = w.redisAdapter.Del(ctx, uniqueKey)
 	if err != nil {
 		logError("worker.delete_unique_job.del", err)
 	}
 }
 
-func (w *worker) removeJobFromInProgress(job *Job, fate terminateOp) {
-	conn := w.pool.Get()
-	defer conn.Close()
+func (w *worker) removeJobFromInProgress(ctx context.Context, job *Job, fate terminateOp) {
+	err := w.redisAdapter.WithMulti(ctx, func(r redis.Redis) error {
+		if err := r.LRem(ctx, string(job.inProgQueue), job.rawJSON); err != nil {
+			return err
+		}
+		if err := r.Decr(ctx, redisKeyJobsLock(w.namespace, job.Name)); err != nil {
+			return err
+		}
+		if err := r.HIncrBy(ctx, redisKeyJobsLockInfo(w.namespace, job.Name), w.poolID, -1); err != nil {
+			return err
+		}
+		if err := fate(ctx, r); err != nil {
+			logError("worker.remove_job_from_in_progress.fate", err)
+		}
 
-	conn.Send("MULTI")
-	conn.Send("LREM", job.inProgQueue, 1, job.rawJSON)
-	conn.Send("DECR", redisKeyJobsLock(w.namespace, job.Name))
-	conn.Send("HINCRBY", redisKeyJobsLockInfo(w.namespace, job.Name), w.poolID, -1)
-	fate(conn)
-	if _, err := conn.Do("EXEC"); err != nil {
+		return nil
+	})
+	if err != nil {
 		logError("worker.remove_job_from_in_progress.lrem", err)
 	}
 }
 
-type terminateOp func(conn redis.Conn)
+type terminateOp func(ctx context.Context, r redis.Redis) error
 
 // opType describes the type of terminateOp.
 // It's used to distinguish between terminateOp functions.
@@ -339,16 +363,24 @@ const (
 	opDead
 )
 
-func terminateOnly(_ redis.Conn) { return }
+func terminateOnly(_ context.Context, _ redis.Redis) error {
+	return nil
+}
+
 func terminateAndRetry(w *worker, jt *jobType, job *Job) (terminateOp, opType) {
 	rawJSON, err := job.serialize()
 	if err != nil {
 		logError("worker.terminate_and_retry.serialize", err)
 		return terminateOnly, opTerminate
 	}
-	return func(conn redis.Conn) {
-		conn.Send("ZADD", redisKeyRetry(w.namespace), nowEpochSeconds()+jt.calcBackoff(job), rawJSON)
-	}, opRetry
+
+	fateFn := func(ctx context.Context, r redis.Redis) error {
+		score := float64(nowEpochSeconds() + jt.calcBackoff(job))
+		err := r.ZAdd(ctx, redisKeyRetry(w.namespace), score, rawJSON)
+		return err
+	}
+
+	return fateFn, opRetry
 }
 func terminateAndDead(w *worker, job *Job) (terminateOp, opType) {
 	rawJSON, err := job.serialize()
@@ -356,14 +388,19 @@ func terminateAndDead(w *worker, job *Job) (terminateOp, opType) {
 		logError("worker.terminate_and_dead.serialize", err)
 		return terminateOnly, opTerminate
 	}
-	return func(conn redis.Conn) {
+
+	fateFn := func(ctx context.Context, r redis.Redis) error {
 		// NOTE: sidekiq limits the # of jobs: only keep jobs for 6 months, and only keep a max # of jobs
 		// The max # of jobs seems really horrible. Seems like operations should be on top of it.
 		// conn.Send("ZREMRANGEBYSCORE", redisKeyDead(w.namespace), "-inf", now - keepInterval)
 		// conn.Send("ZREMRANGEBYRANK", redisKeyDead(w.namespace), 0, -maxJobs)
 
-		conn.Send("ZADD", redisKeyDead(w.namespace), nowEpochSeconds(), rawJSON)
-	}, opDead
+		score := float64(nowEpochSeconds())
+		err := r.ZAdd(ctx, redisKeyDead(w.namespace), score, rawJSON)
+		return err
+	}
+
+	return fateFn, opDead
 }
 
 func (w *worker) jobFate(jt *jobType, job *Job) (terminateOp, opType) {
@@ -383,4 +420,15 @@ func (w *worker) jobFate(jt *jobType, job *Job) (terminateOp, opType) {
 func defaultBackoffCalculator(job *Job) int64 {
 	fails := job.Fails
 	return (fails * fails * fails * fails) + 15 + (rand.Int63n(30) * (fails + 1))
+}
+
+func convertToBytes(value any) ([]byte, bool) {
+	switch v := value.(type) {
+	case string:
+		return []byte(v), true
+	case []byte:
+		return v, true
+	default:
+		return nil, false
+	}
 }

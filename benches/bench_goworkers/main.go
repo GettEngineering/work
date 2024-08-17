@@ -1,14 +1,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sync/atomic"
 	"time"
 
+	goredisv8 "github.com/go-redis/redis/v8"
 	"github.com/gocraft/health"
 	"github.com/gomodule/redigo/redis"
 	"github.com/jrallison/go-workers"
+
+	workredis "github.com/GettEngineering/work/redis"
+	goredisv8adapter "github.com/GettEngineering/work/redis/adapters/goredisv8"
+	redigoadapter "github.com/GettEngineering/work/redis/adapters/redigo"
 )
 
 func myJob(m *workers.Msg) {
@@ -16,13 +22,13 @@ func myJob(m *workers.Msg) {
 }
 
 var namespace = "bench_test"
-var pool = newPool(":6379")
+var redisAdapter = newRedis(":6379")
 
 func main() {
-
+	ctx := context.Background()
 	stream := health.NewStream().AddSink(&health.WriterSink{os.Stdout})
 	stream.Event("wat")
-	cleanKeyspace()
+	cleanKeyspace(ctx)
 
 	workers.Configure(map[string]string{
 		// location of redis instance
@@ -94,39 +100,44 @@ func enqueueJobs(queue string, count int) {
 	}
 }
 
-func cleanKeyspace() {
-	conn := pool.Get()
-	defer conn.Close()
-
-	keys, err := redis.Strings(conn.Do("KEYS", namespace+"*"))
+func cleanKeyspace(ctx context.Context) {
+	keys, err := redisAdapter.Keys(ctx, namespace+"*")
 	if err != nil {
 		panic("could not get keys: " + err.Error())
 	}
 	for _, k := range keys {
 		//fmt.Println("deleting ", k)
-		if _, err := conn.Do("DEL", k); err != nil {
+		if err := redisAdapter.Del(ctx, k); err != nil {
 			panic("could not del: " + err.Error())
 		}
 	}
 }
 
-func newPool(addr string) *redis.Pool {
-	return &redis.Pool{
-		MaxActive:   3,
-		MaxIdle:     3,
-		IdleTimeout: 240 * time.Second,
-		Dial: func() (redis.Conn, error) {
-			c, err := redis.Dial("tcp", addr)
-			if err != nil {
-				return nil, err
-			}
-			return c, nil
-			//return redis.NewLoggingConn(c, log.New(os.Stdout, "", 0), "redis"), err
-		},
-		Wait: true,
-		//TestOnBorrow: func(c redis.Conn, t time.Time) error {
-		//	_, err := c.Do("PING")
-		//	return err
-		//},
+func newRedis(addr string) workredis.Redis {
+	switch os.Getenv("REDIS_ADAPTER") {
+	case "redigo":
+		pool := &redis.Pool{
+			MaxActive:   20,
+			MaxIdle:     20,
+			IdleTimeout: 240 * time.Second,
+			Dial: func() (redis.Conn, error) {
+				c, err := redis.Dial("tcp", addr)
+				if err != nil {
+					return nil, err
+				}
+				return c, nil
+			},
+			Wait: true,
+		}
+		return redigoadapter.NewRedigoAdapter(pool)
+	case "goredisv8":
+		fallthrough
+	default:
+		rdb := goredisv8.NewClient(&goredisv8.Options{
+			Addr:     addr,
+			Password: "",
+			DB:       0,
+		})
+		return goredisv8adapter.NewGoredisAdapter(rdb)
 	}
 }

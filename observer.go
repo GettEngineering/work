@@ -1,18 +1,19 @@
 package work
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
+	"github.com/GettEngineering/work/redis"
 )
 
 // An observer observes a single worker. Each worker has its own observer.
 type observer struct {
-	namespace string
-	workerID  string
-	pool      *redis.Pool
+	namespace    string
+	workerID     string
+	redisAdapter redis.Redis
 
 	// nil: worker isn't doing anything that we know of
 	// not nil: the last started observation that we received on the channel.
@@ -63,11 +64,11 @@ type observation struct {
 
 const observerBufferSize = 1024
 
-func newObserver(namespace string, pool *redis.Pool, workerID string) *observer {
+func newObserver(namespace string, redisAdapter redis.Redis, workerID string) *observer {
 	return &observer{
 		namespace:        namespace,
 		workerID:         workerID,
-		pool:             pool,
+		redisAdapter:     redisAdapter,
 		observationsChan: make(chan *observation, observerBufferSize),
 
 		stopChan:         make(chan struct{}),
@@ -132,6 +133,8 @@ func (o *observer) observeCheckin(jobName, jobID, checkin string) {
 }
 
 func (o *observer) loop() {
+	ctx := context.TODO()
+
 	// Every tick we'll update redis if necessary
 	// We don't update it on every job because the only purpose of this data is for humans to inspect the system,
 	// and a fast worker could move onto new jobs every few ms.
@@ -147,9 +150,9 @@ func (o *observer) loop() {
 			for {
 				select {
 				case obv := <-o.observationsChan:
-					o.process(obv)
+					o.process(ctx, obv)
 				default:
-					if err := o.writeStatus(o.currentStartedObservation); err != nil {
+					if err := o.writeStatus(ctx, o.currentStartedObservation); err != nil {
 						logError("observer.write", err)
 					}
 					o.doneDrainingChan <- struct{}{}
@@ -158,18 +161,18 @@ func (o *observer) loop() {
 			}
 		case <-ticker:
 			if o.lastWrittenVersion != o.version {
-				if err := o.writeStatus(o.currentStartedObservation); err != nil {
+				if err := o.writeStatus(ctx, o.currentStartedObservation); err != nil {
 					logError("observer.write", err)
 				}
 				o.lastWrittenVersion = o.version
 			}
 		case obv := <-o.observationsChan:
-			o.process(obv)
+			o.process(ctx, obv)
 		}
 	}
 }
 
-func (o *observer) process(obv *observation) {
+func (o *observer) process(ctx context.Context, obv *observation) {
 	if obv.kind == observationKindStarted {
 		o.currentStartedObservation = obv
 	} else if obv.kind == observationKindDone {
@@ -186,21 +189,18 @@ func (o *observer) process(obv *observation) {
 
 	// If this is the version observation we got, just go ahead and write it.
 	if o.version == 1 {
-		if err := o.writeStatus(o.currentStartedObservation); err != nil {
+		if err := o.writeStatus(ctx, o.currentStartedObservation); err != nil {
 			logError("observer.first_write", err)
 		}
 		o.lastWrittenVersion = o.version
 	}
 }
 
-func (o *observer) writeStatus(obv *observation) error {
-	conn := o.pool.Get()
-	defer conn.Close()
-
+func (o *observer) writeStatus(ctx context.Context, obv *observation) error {
 	key := redisKeyWorkerObservation(o.namespace, o.workerID)
 
 	if obv == nil {
-		if _, err := conn.Do("DEL", key); err != nil {
+		if err := o.redisAdapter.Del(ctx, key); err != nil {
 			return err
 		}
 	} else {
@@ -216,9 +216,8 @@ func (o *observer) writeStatus(obv *observation) error {
 			return obv.argsJSONErr
 		}
 
-		args := make([]interface{}, 0, 13)
+		args := make([]interface{}, 0, 12)
 		args = append(args,
-			key,
 			"job_name", obv.jobName,
 			"job_id", obv.jobID,
 			"started_at", obv.startedAt,
@@ -232,12 +231,18 @@ func (o *observer) writeStatus(obv *observation) error {
 			)
 		}
 
-		conn.Send("HMSET", args...)
-		conn.Send("EXPIRE", key, 60*60*24)
-		if err := conn.Flush(); err != nil {
+		err := o.redisAdapter.WithPipeline(ctx, func(r redis.Redis) error {
+			if err := r.HSet(ctx, key, args...); err != nil {
+				return err
+			}
+			if err := r.Expire(ctx, key, 24*time.Hour); err != nil {
+				return err
+			}
+			return nil
+		})
+		if err != nil {
 			return err
 		}
-
 	}
 
 	return nil

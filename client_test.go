@@ -1,34 +1,37 @@
 package work
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/GettEngineering/work/redis"
 )
 
 type TestContext struct{}
 
 func TestClientWorkerPoolHeartbeats(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
-	wp := NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(job *Job) error { return nil })
 	wp.Job("bob", func(job *Job) error { return nil })
 	wp.Start()
 
-	wp2 := NewWorkerPool(TestContext{}, 11, ns, pool)
+	wp2 := NewWorkerPool(TestContext{}, 11, ns, redisAdapter)
 	wp2.Job("foo", func(job *Job) error { return nil })
 	wp2.Job("bar", func(job *Job) error { return nil })
 	wp2.Start()
 
 	time.Sleep(20 * time.Millisecond)
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 
 	hbs, err := client.WorkerPoolHeartbeats()
 	assert.NoError(t, err)
@@ -64,17 +67,18 @@ func TestClientWorkerPoolHeartbeats(t *testing.T) {
 }
 
 func TestClientWorkerObservations(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", Q{"a": 1, "b": 2})
 	assert.Nil(t, err)
 	_, err = enqueuer.Enqueue("foo", Q{"a": 3, "b": 4})
 	assert.Nil(t, err)
 
-	wp := NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(job *Job) error {
 		time.Sleep(50 * time.Millisecond)
 		return nil
@@ -87,7 +91,7 @@ func TestClientWorkerObservations(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond) // let the observers start
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	observations, err := client.WorkerObservations()
 	assert.NoError(t, err)
 	assert.Equal(t, 10, len(observations))
@@ -133,18 +137,19 @@ func TestClientWorkerObservations(t *testing.T) {
 }
 
 func TestClientQueues(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
 	_, err = enqueuer.Enqueue("foo", nil)
 	_, err = enqueuer.Enqueue("zaz", nil)
 
 	// Start a pool to work on it. It's going to work on the queues
 	// side effect of that is knowing which jobs are avail
-	wp := NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(job *Job) error {
 		return nil
 	})
@@ -167,7 +172,7 @@ func TestClientQueues(t *testing.T) {
 	enqueuer.Enqueue("wat", nil)
 
 	setNowEpochSecondsMock(1425263709)
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	queues, err := client.Queues()
 	assert.NoError(t, err)
 
@@ -184,11 +189,12 @@ func TestClientQueues(t *testing.T) {
 }
 
 func TestClientScheduledJobs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
 	defer resetNowEpochSecondsMock()
@@ -196,7 +202,7 @@ func TestClientScheduledJobs(t *testing.T) {
 	_, err = enqueuer.EnqueueIn("zaz", 4, Q{"a": 3, "b": 4})
 	_, err = enqueuer.EnqueueIn("foo", 2, Q{"a": 3, "b": 4})
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.ScheduledJobs(1)
 	assert.NoError(t, err)
 	assert.Equal(t, 3, len(jobs))
@@ -232,20 +238,21 @@ func TestClientScheduledJobs(t *testing.T) {
 }
 
 func TestClientRetryJobs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
 	defer resetNowEpochSecondsMock()
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", Q{"a": 1, "b": 2})
 	assert.Nil(t, err)
 
 	setNowEpochSecondsMock(1425263429)
 
-	wp := NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(job *Job) error {
 		return fmt.Errorf("ohno")
 	})
@@ -253,7 +260,7 @@ func TestClientRetryJobs(t *testing.T) {
 	wp.Drain()
 	wp.Stop()
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.RetryJobs(1)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(jobs))
@@ -271,20 +278,21 @@ func TestClientRetryJobs(t *testing.T) {
 }
 
 func TestClientDeadJobs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
 	defer resetNowEpochSecondsMock()
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", Q{"a": 1, "b": 2})
 	assert.Nil(t, err)
 
 	setNowEpochSecondsMock(1425263429)
 
-	wp := NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.JobWithOptions("wat", JobOptions{Priority: 1, MaxFails: 1}, func(job *Job) error {
 		return fmt.Errorf("ohno")
 	})
@@ -292,7 +300,7 @@ func TestClientDeadJobs(t *testing.T) {
 	wp.Drain()
 	wp.Stop()
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.DeadJobs(1)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(jobs))
@@ -326,17 +334,18 @@ func TestClientDeadJobs(t *testing.T) {
 }
 
 func TestClientDeleteDeadJob(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	// Insert a dead job:
-	insertDeadJob(ns, pool, "wat", 12345, 12347)
-	insertDeadJob(ns, pool, "wat", 12345, 12347)
-	insertDeadJob(ns, pool, "wat", 12345, 12349)
-	insertDeadJob(ns, pool, "wat", 12345, 12350)
+	insertDeadJob(ctx, ns, redisAdapter, "wat", 12345, 12347)
+	insertDeadJob(ctx, ns, redisAdapter, "wat", 12345, 12347)
+	insertDeadJob(ctx, ns, redisAdapter, "wat", 12345, 12349)
+	insertDeadJob(ctx, ns, redisAdapter, "wat", 12345, 12350)
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.DeadJobs(1)
 	assert.NoError(t, err)
 	assert.Equal(t, 4, len(jobs))
@@ -355,17 +364,18 @@ func TestClientDeleteDeadJob(t *testing.T) {
 }
 
 func TestClientRetryDeadJob(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	// Insert a dead job:
-	insertDeadJob(ns, pool, "wat1", 12345, 12347)
-	insertDeadJob(ns, pool, "wat2", 12345, 12347)
-	insertDeadJob(ns, pool, "wat3", 12345, 12349)
-	insertDeadJob(ns, pool, "wat4", 12345, 12350)
+	insertDeadJob(ctx, ns, redisAdapter, "wat1", 12345, 12347)
+	insertDeadJob(ctx, ns, redisAdapter, "wat2", 12345, 12347)
+	insertDeadJob(ctx, ns, redisAdapter, "wat3", 12345, 12349)
+	insertDeadJob(ctx, ns, redisAdapter, "wat4", 12345, 12350)
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.DeadJobs(1)
 	assert.NoError(t, err)
 	assert.EqualValues(t, 4, len(jobs))
@@ -381,28 +391,28 @@ func TestClientRetryDeadJob(t *testing.T) {
 		tot--
 	}
 
-	job1 := getQueuedJob(ns, pool, "wat1")
+	job1 := getQueuedJob(ctx, ns, redisAdapter, "wat1")
 	assert.NotNil(t, job1)
 	assert.Equal(t, "wat1", job1.Name)
 	assert.EqualValues(t, 0, job1.Fails)
 	assert.Equal(t, "", job1.LastErr)
 	assert.EqualValues(t, 0, job1.FailedAt)
 
-	job1 = getQueuedJob(ns, pool, "wat2")
+	job1 = getQueuedJob(ctx, ns, redisAdapter, "wat2")
 	assert.NotNil(t, job1)
 	assert.Equal(t, "wat2", job1.Name)
 	assert.EqualValues(t, 0, job1.Fails)
 	assert.Equal(t, "", job1.LastErr)
 	assert.EqualValues(t, 0, job1.FailedAt)
 
-	job1 = getQueuedJob(ns, pool, "wat3")
+	job1 = getQueuedJob(ctx, ns, redisAdapter, "wat3")
 	assert.NotNil(t, job1)
 	assert.Equal(t, "wat3", job1.Name)
 	assert.EqualValues(t, 0, job1.Fails)
 	assert.Equal(t, "", job1.LastErr)
 	assert.EqualValues(t, 0, job1.FailedAt)
 
-	job1 = getQueuedJob(ns, pool, "wat4")
+	job1 = getQueuedJob(ctx, ns, redisAdapter, "wat4")
 	assert.NotNil(t, job1)
 	assert.Equal(t, "wat4", job1.Name)
 	assert.EqualValues(t, 0, job1.Fails)
@@ -411,9 +421,10 @@ func TestClientRetryDeadJob(t *testing.T) {
 }
 
 func TestClientRetryDeadJobWithArgs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	// Enqueue a job with arguments
 	name := "foobar"
@@ -431,22 +442,20 @@ func TestClientRetryDeadJobWithArgs(t *testing.T) {
 
 	rawJSON, _ := job.serialize()
 
-	conn := pool.Get()
-	defer conn.Close()
-	_, err := conn.Do("ZADD", redisKeyDead(ns), failAt, rawJSON)
+	err := redisAdapter.ZAdd(ctx, redisKeyDead(ns), float64(failAt), rawJSON)
 	if err != nil {
 		panic(err.Error())
 	}
 
-	if _, err := conn.Do("SADD", redisKeyKnownJobs(ns), name); err != nil {
+	if err := redisAdapter.SAdd(ctx, redisKeyKnownJobs(ns), name); err != nil {
 		panic(err)
 	}
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	err = client.RetryDeadJob(failAt, job.ID)
 	assert.NoError(t, err)
 
-	job1 := getQueuedJob(ns, pool, name)
+	job1 := getQueuedJob(ctx, ns, redisAdapter, name)
 	if assert.NotNil(t, job1) {
 		assert.Equal(t, name, job1.Name)
 		assert.Equal(t, "wat", job1.ArgString("a"))
@@ -455,17 +464,18 @@ func TestClientRetryDeadJobWithArgs(t *testing.T) {
 }
 
 func TestClientDeleteAllDeadJobs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	// Insert a dead job:
-	insertDeadJob(ns, pool, "wat", 12345, 12347)
-	insertDeadJob(ns, pool, "wat", 12345, 12347)
-	insertDeadJob(ns, pool, "wat", 12345, 12349)
-	insertDeadJob(ns, pool, "wat", 12345, 12350)
+	insertDeadJob(ctx, ns, redisAdapter, "wat", 12345, 12347)
+	insertDeadJob(ctx, ns, redisAdapter, "wat", 12345, 12347)
+	insertDeadJob(ctx, ns, redisAdapter, "wat", 12345, 12349)
+	insertDeadJob(ctx, ns, redisAdapter, "wat", 12345, 12350)
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.DeadJobs(1)
 	assert.NoError(t, err)
 	assert.Equal(t, 4, len(jobs))
@@ -481,19 +491,20 @@ func TestClientDeleteAllDeadJobs(t *testing.T) {
 }
 
 func TestClientRetryAllDeadJobs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
 	defer resetNowEpochSecondsMock()
 
-	insertDeadJob(ns, pool, "wat1", 12345, 12347)
-	insertDeadJob(ns, pool, "wat2", 12345, 12347)
-	insertDeadJob(ns, pool, "wat3", 12345, 12349)
-	insertDeadJob(ns, pool, "wat4", 12345, 12350)
+	insertDeadJob(ctx, ns, redisAdapter, "wat1", 12345, 12347)
+	insertDeadJob(ctx, ns, redisAdapter, "wat2", 12345, 12347)
+	insertDeadJob(ctx, ns, redisAdapter, "wat3", 12345, 12349)
+	insertDeadJob(ctx, ns, redisAdapter, "wat4", 12345, 12350)
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.DeadJobs(1)
 	assert.NoError(t, err)
 	assert.EqualValues(t, 4, len(jobs))
@@ -505,7 +516,7 @@ func TestClientRetryAllDeadJobs(t *testing.T) {
 	assert.NoError(t, err)
 	assert.EqualValues(t, 0, count)
 
-	job := getQueuedJob(ns, pool, "wat1")
+	job := getQueuedJob(ctx, ns, redisAdapter, "wat1")
 	assert.NotNil(t, job)
 	assert.Equal(t, "wat1", job.Name)
 	assert.EqualValues(t, 1425263409, job.EnqueuedAt)
@@ -513,7 +524,7 @@ func TestClientRetryAllDeadJobs(t *testing.T) {
 	assert.Equal(t, "", job.LastErr)
 	assert.EqualValues(t, 0, job.FailedAt)
 
-	job = getQueuedJob(ns, pool, "wat2")
+	job = getQueuedJob(ctx, ns, redisAdapter, "wat2")
 	assert.NotNil(t, job)
 	assert.Equal(t, "wat2", job.Name)
 	assert.EqualValues(t, 1425263409, job.EnqueuedAt)
@@ -521,7 +532,7 @@ func TestClientRetryAllDeadJobs(t *testing.T) {
 	assert.Equal(t, "", job.LastErr)
 	assert.EqualValues(t, 0, job.FailedAt)
 
-	job = getQueuedJob(ns, pool, "wat3")
+	job = getQueuedJob(ctx, ns, redisAdapter, "wat3")
 	assert.NotNil(t, job)
 	assert.Equal(t, "wat3", job.Name)
 	assert.EqualValues(t, 1425263409, job.EnqueuedAt)
@@ -529,7 +540,7 @@ func TestClientRetryAllDeadJobs(t *testing.T) {
 	assert.Equal(t, "", job.LastErr)
 	assert.EqualValues(t, 0, job.FailedAt)
 
-	job = getQueuedJob(ns, pool, "wat4")
+	job = getQueuedJob(ctx, ns, redisAdapter, "wat4")
 	assert.NotNil(t, job)
 	assert.Equal(t, "wat4", job.Name)
 	assert.EqualValues(t, 1425263409, job.EnqueuedAt)
@@ -539,34 +550,39 @@ func TestClientRetryAllDeadJobs(t *testing.T) {
 }
 
 func TestClientRetryAllDeadJobsBig(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
-
-	conn := pool.Get()
-	defer conn.Close()
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	// Ok, we need to efficiently add 10k jobs to the dead queue.
 	// I tried using insertDeadJob but it was too slow (increased test time by 1 second)
 	dead := redisKeyDead(ns)
-	for i := 0; i < 10000; i++ {
-		job := &Job{
-			Name:       "wat1",
-			ID:         makeIdentifier(),
-			EnqueuedAt: 12345,
-			Args:       nil,
-			Fails:      3,
-			LastErr:    "sorry",
-			FailedAt:   12347,
+
+	err := redisAdapter.WithPipeline(ctx, func(r redis.Redis) error {
+		for i := 0; i < 10000; i++ {
+			job := &Job{
+				Name:       "wat1",
+				ID:         makeIdentifier(),
+				EnqueuedAt: 12345,
+				Args:       nil,
+				Fails:      3,
+				LastErr:    "sorry",
+				FailedAt:   12347,
+			}
+
+			rawJSON, _ := job.serialize()
+
+			if err := r.ZAdd(ctx, dead, 12347, rawJSON); err != nil {
+				return err
+			}
 		}
 
-		rawJSON, _ := job.serialize()
-		conn.Send("ZADD", dead, 12347, rawJSON)
-	}
-	err := conn.Flush()
+		return nil
+	})
 	assert.NoError(t, err)
 
-	if _, err := conn.Do("SADD", redisKeyKnownJobs(ns), "wat1"); err != nil {
+	if err := redisAdapter.SAdd(ctx, redisKeyKnownJobs(ns), "wat1"); err != nil {
 		panic(err)
 	}
 
@@ -583,12 +599,12 @@ func TestClientRetryAllDeadJobsBig(t *testing.T) {
 
 	rawJSON, _ := job.serialize()
 
-	_, err = conn.Do("ZADD", dead, 12347, rawJSON)
+	err = redisAdapter.ZAdd(ctx, dead, 12347, rawJSON)
 	if err != nil {
 		panic(err.Error())
 	}
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	_, count, err := client.DeadJobs(1)
 	assert.NoError(t, err)
 	assert.EqualValues(t, 10001, count)
@@ -599,50 +615,52 @@ func TestClientRetryAllDeadJobsBig(t *testing.T) {
 	assert.NoError(t, err)
 	assert.EqualValues(t, 1, count) // the funny job that we didn't know how to queue up
 
-	jobCount := listSize(pool, redisKeyJobs(ns, "wat1"))
+	jobCount := listSize(ctx, redisAdapter, redisKeyJobs(ns, "wat1"))
 	assert.EqualValues(t, 10000, jobCount)
 
-	_, job = jobOnZset(pool, dead)
+	_, job = jobOnZset(ctx, redisAdapter, dead)
 	assert.Equal(t, "dontexist", job.Name)
 	assert.Equal(t, "unknown job when requeueing", job.LastErr)
 }
 
 func TestClientDeleteScheduledJob(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	// Delete an invalid job. Make sure we get error
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	err := client.DeleteScheduledJob(3, "bob")
 	assert.Equal(t, ErrNotDeleted, err)
 
 	// Schedule a job. Delete it.
-	enq := NewEnqueuer(ns, pool)
+	enq := NewEnqueuer(ns, redisAdapter)
 	j, err := enq.EnqueueIn("foo", 10, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, j)
 
 	err = client.DeleteScheduledJob(j.RunAt, j.ID)
 	assert.NoError(t, err)
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyScheduled(ns)))
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyScheduled(ns)))
 }
 
 func TestClientDeleteScheduledUniqueJob(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	// Schedule a unique job. Delete it. Ensure we can schedule it again.
-	enq := NewEnqueuer(ns, pool)
+	enq := NewEnqueuer(ns, redisAdapter)
 	j, err := enq.EnqueueUniqueIn("foo", 10, nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, j)
 
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	err = client.DeleteScheduledJob(j.RunAt, j.ID)
 	assert.NoError(t, err)
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyScheduled(ns)))
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyScheduled(ns)))
 
 	j, err = enq.EnqueueUniqueIn("foo", 10, nil) // Can do it again
 	assert.NoError(t, err)
@@ -650,20 +668,21 @@ func TestClientDeleteScheduledUniqueJob(t *testing.T) {
 }
 
 func TestClientDeleteRetryJob(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
 	defer resetNowEpochSecondsMock()
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	job, err := enqueuer.Enqueue("wat", Q{"a": 1, "b": 2})
 	assert.Nil(t, err)
 
 	setNowEpochSecondsMock(1425263429)
 
-	wp := NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(job *Job) error {
 		return fmt.Errorf("ohno")
 	})
@@ -672,18 +691,24 @@ func TestClientDeleteRetryJob(t *testing.T) {
 	wp.Stop()
 
 	// Ok so now we have a retry job
-	client := NewClient(ns, pool)
+	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.RetryJobs(1)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(jobs))
 	if assert.EqualValues(t, 1, count) {
 		err = client.DeleteRetryJob(jobs[0].RetryAt, job.ID)
 		assert.NoError(t, err)
-		assert.EqualValues(t, 0, zsetSize(pool, redisKeyRetry(ns)))
+		assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyRetry(ns)))
 	}
 }
 
-func insertDeadJob(ns string, pool *redis.Pool, name string, encAt, failAt int64) *Job {
+func insertDeadJob(
+	ctx context.Context,
+	ns string,
+	redisAdapter redis.Redis,
+	name string,
+	encAt, failAt int64,
+) *Job {
 	job := &Job{
 		Name:       name,
 		ID:         makeIdentifier(),
@@ -696,24 +721,20 @@ func insertDeadJob(ns string, pool *redis.Pool, name string, encAt, failAt int64
 
 	rawJSON, _ := job.serialize()
 
-	conn := pool.Get()
-	defer conn.Close()
-	_, err := conn.Do("ZADD", redisKeyDead(ns), failAt, rawJSON)
+	err := redisAdapter.ZAdd(ctx, redisKeyDead(ns), float64(failAt), rawJSON)
 	if err != nil {
 		panic(err.Error())
 	}
 
-	if _, err := conn.Do("SADD", redisKeyKnownJobs(ns), name); err != nil {
+	if err := redisAdapter.SAdd(ctx, redisKeyKnownJobs(ns), name); err != nil {
 		panic(err)
 	}
 
 	return job
 }
 
-func getQueuedJob(ns string, pool *redis.Pool, name string) *Job {
-	conn := pool.Get()
-	defer conn.Close()
-	jobBytes, err := redis.Bytes(conn.Do("RPOP", redisKeyJobsPrefix(ns)+name))
+func getQueuedJob(ctx context.Context, ns string, redisAdapter redis.Redis, name string) *Job {
+	jobBytes, err := redisAdapter.RPop(ctx, redisKeyJobsPrefix(ns)+name).Bytes()
 	if err != nil {
 		return nil
 	}

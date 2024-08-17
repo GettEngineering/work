@@ -1,13 +1,15 @@
 package work
 
 import (
+	"context"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/robfig/cron/v3"
+
+	"github.com/GettEngineering/work/redis"
 )
 
 // WorkerPool represents a pool of workers. It forms the primary API of gocraft/work. WorkerPools provide the public API of gocraft/work. You can attach jobs and middlware to them. You can start and stop them. Based on their concurrency setting, they'll spin up N worker goroutines.
@@ -15,7 +17,7 @@ type WorkerPool struct {
 	workerPoolID  string
 	concurrency   uint
 	namespace     string // eg, "myapp-work"
-	pool          *redis.Pool
+	redisAdapter  redis.Redis
 	sleepBackoffs []int64
 
 	contextType  reflect.Type
@@ -85,31 +87,33 @@ type middlewareHandler struct {
 
 // NewWorkerPool creates a new worker pool. ctx should be a struct literal whose type will be used for middleware and handlers.
 // concurrency specifies how many workers to spin up - each worker can process jobs concurrently.
-func NewWorkerPool(ctx interface{}, concurrency uint, namespace string, pool *redis.Pool) *WorkerPool {
-	return NewWorkerPoolWithOptions(ctx, concurrency, namespace, pool, WorkerPoolOptions{})
+func NewWorkerPool(ctx interface{}, concurrency uint, namespace string, redisAdapter redis.Redis) *WorkerPool {
+	return NewWorkerPoolWithOptions(ctx, concurrency, namespace, redisAdapter, WorkerPoolOptions{})
 }
 
 // NewWorkerPoolWithOptions creates a new worker pool as per the NewWorkerPool function, but permits you to specify
 // additional options such as sleep backoffs.
-func NewWorkerPoolWithOptions(ctx interface{}, concurrency uint, namespace string, pool *redis.Pool, workerPoolOpts WorkerPoolOptions) *WorkerPool {
-	if pool == nil {
-		panic("NewWorkerPool needs a non-nil *redis.Pool")
-	}
-
+func NewWorkerPoolWithOptions(
+	ctx interface{},
+	concurrency uint,
+	namespace string,
+	redisAdapter redis.Redis,
+	workerPoolOpts WorkerPoolOptions,
+) *WorkerPool {
 	ctxType := reflect.TypeOf(ctx)
 	validateContextType(ctxType)
 	wp := &WorkerPool{
 		workerPoolID:  makeIdentifier(),
 		concurrency:   concurrency,
 		namespace:     namespace,
-		pool:          pool,
+		redisAdapter:  redisAdapter,
 		sleepBackoffs: workerPoolOpts.SleepBackoffs,
 		contextType:   ctxType,
 		jobTypes:      make(map[string]*jobType),
 	}
 
 	for i := uint(0); i < wp.concurrency; i++ {
-		w := newWorker(wp.namespace, wp.workerPoolID, wp.pool, wp.contextType, nil, wp.jobTypes, wp.sleepBackoffs)
+		w := newWorker(wp.namespace, wp.workerPoolID, redisAdapter, wp.contextType, nil, wp.jobTypes, wp.sleepBackoffs)
 		wp.workers = append(wp.workers, w)
 	}
 
@@ -200,17 +204,24 @@ func (wp *WorkerPool) Start() {
 	wp.started = true
 
 	// TODO: we should cleanup stale keys on startup from previously registered jobs
-	wp.writeConcurrencyControlsToRedis()
-	go wp.writeKnownJobsToRedis()
+	wp.writeConcurrencyControlsToRedis(context.TODO())
+	go wp.writeKnownJobsToRedis(context.TODO())
 
 	for _, w := range wp.workers {
 		go w.start()
 	}
 
-	wp.heartbeater = newWorkerPoolHeartbeater(wp.namespace, wp.pool, wp.workerPoolID, wp.jobTypes, wp.concurrency, wp.workerIDs())
+	wp.heartbeater = newWorkerPoolHeartbeater(
+		wp.namespace,
+		wp.redisAdapter,
+		wp.workerPoolID,
+		wp.jobTypes,
+		wp.concurrency,
+		wp.workerIDs(),
+	)
 	wp.heartbeater.start()
 	wp.startRequeuers()
-	wp.periodicEnqueuer = newPeriodicEnqueuer(wp.namespace, wp.pool, wp.periodicJobs)
+	wp.periodicEnqueuer = newPeriodicEnqueuer(wp.namespace, wp.redisAdapter, wp.periodicJobs)
 	wp.periodicEnqueuer.start()
 }
 
@@ -255,9 +266,10 @@ func (wp *WorkerPool) startRequeuers() {
 	for k := range wp.jobTypes {
 		jobNames = append(jobNames, k)
 	}
-	wp.retrier = newRequeuer(wp.namespace, wp.pool, redisKeyRetry(wp.namespace), jobNames)
-	wp.scheduler = newRequeuer(wp.namespace, wp.pool, redisKeyScheduled(wp.namespace), jobNames)
-	wp.deadPoolReaper = newDeadPoolReaper(wp.namespace, wp.pool, jobNames)
+
+	wp.retrier = newRequeuer(wp.namespace, wp.redisAdapter, redisKeyRetry(wp.namespace), jobNames)
+	wp.scheduler = newRequeuer(wp.namespace, wp.redisAdapter, redisKeyScheduled(wp.namespace), jobNames)
+	wp.deadPoolReaper = newDeadPoolReaper(wp.namespace, wp.redisAdapter, jobNames)
 	wp.retrier.start()
 	wp.scheduler.start()
 	wp.deadPoolReaper.start()
@@ -272,34 +284,31 @@ func (wp *WorkerPool) workerIDs() []string {
 	return wids
 }
 
-func (wp *WorkerPool) writeKnownJobsToRedis() {
+func (wp *WorkerPool) writeKnownJobsToRedis(ctx context.Context) {
 	if len(wp.jobTypes) == 0 {
 		return
 	}
 
-	conn := wp.pool.Get()
-	defer conn.Close()
-	key := redisKeyKnownJobs(wp.namespace)
-	jobNames := make([]interface{}, 0, len(wp.jobTypes)+1)
-	jobNames = append(jobNames, key)
+	jobNames := make([]any, 0, len(wp.jobTypes))
 	for k := range wp.jobTypes {
 		jobNames = append(jobNames, k)
 	}
 
-	if _, err := conn.Do("SADD", jobNames...); err != nil {
+	key := redisKeyKnownJobs(wp.namespace)
+
+	if err := wp.redisAdapter.SAdd(ctx, key, jobNames...); err != nil {
 		logError("write_known_jobs", err)
 	}
 }
 
-func (wp *WorkerPool) writeConcurrencyControlsToRedis() {
+func (wp *WorkerPool) writeConcurrencyControlsToRedis(ctx context.Context) {
 	if len(wp.jobTypes) == 0 {
 		return
 	}
 
-	conn := wp.pool.Get()
-	defer conn.Close()
 	for jobName, jobType := range wp.jobTypes {
-		if _, err := conn.Do("SET", redisKeyJobsConcurrency(wp.namespace, jobName), jobType.MaxConcurrency); err != nil {
+		key := redisKeyJobsConcurrency(wp.namespace, jobName)
+		if err := wp.redisAdapter.Set(ctx, key, jobType.MaxConcurrency); err != nil {
 			logError("write_concurrency_controls_max_concurrency", err)
 		}
 	}
@@ -327,11 +336,11 @@ func validateMiddlewareType(ctxType reflect.Type, vfn reflect.Value) {
 // Since it's easy to pass the wrong method as a middleware/handler, and since the user can't rely on static type checking since we use reflection,
 // lets be super helpful about what they did and what they need to do.
 // Arguments:
-//  - vfn is the failed method
-//  - addingType is for "You are adding {addingType} to a worker pool...". Eg, "middleware" or "a handler"
-//  - yourType is for "Your {yourType} function can have...". Eg, "middleware" or "handler" or "error handler"
-//  - args is like "rw web.ResponseWriter, req *web.Request, next web.NextMiddlewareFunc"
-//    - NOTE: args can be calculated if you pass in each type. BUT, it doesn't have example argument name, so it has less copy/paste value.
+//   - vfn is the failed method
+//   - addingType is for "You are adding {addingType} to a worker pool...". Eg, "middleware" or "a handler"
+//   - yourType is for "Your {yourType} function can have...". Eg, "middleware" or "handler" or "error handler"
+//   - args is like "rw web.ResponseWriter, req *web.Request, next web.NextMiddlewareFunc"
+//   - NOTE: args can be calculated if you pass in each type. BUT, it doesn't have example argument name, so it has less copy/paste value.
 func instructiveMessage(vfn reflect.Value, addingType string, yourType string, args string, ctxType reflect.Type) string {
 	// Get context type without package.
 	ctxString := ctxType.String()
@@ -388,7 +397,7 @@ func isValidHandlerType(ctxType reflect.Type, vfn reflect.Value) bool {
 			return false
 		}
 	} else if numIn == 2 {
-		if fnType.In(0) != reflect.PtrTo(ctxType) {
+		if fnType.In(0) != reflect.PointerTo(ctxType) {
 			return false
 		}
 		if fnType.In(1) != reflect.TypeOf(j) {
@@ -432,7 +441,7 @@ func isValidMiddlewareType(ctxType reflect.Type, vfn reflect.Value) bool {
 			return false
 		}
 	} else if numIn == 3 {
-		if fnType.In(0) != reflect.PtrTo(ctxType) {
+		if fnType.In(0) != reflect.PointerTo(ctxType) {
 			return false
 		}
 		if fnType.In(1) != reflect.TypeOf(j) {

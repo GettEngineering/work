@@ -1,11 +1,12 @@
 module github.com/GettEngineering/work
 
-go 1.18
+go 1.21
 
 require (
 	github.com/albrow/jobs v0.4.2
 	github.com/benmanns/goworker v0.1.3
 	github.com/braintree/manners v0.0.0-20160418043613-82a8879fc5fd
+	github.com/go-redis/redis/v8 v8.11.5
 	github.com/gocraft/health v0.0.0-20170925182251-8675af27fef0
 	github.com/gocraft/web v0.0.0-20190207150652-9707327fb69b
 	github.com/gomodule/redigo v1.8.9
@@ -17,10 +18,12 @@ require (
 require (
 	github.com/bitly/go-simplejson v0.5.0 // indirect
 	github.com/bmizerany/assert v0.0.0-20160611221934-b7ed37b82869 // indirect
+	github.com/cespare/xxhash/v2 v2.1.2 // indirect
 	github.com/cihub/seelog v0.0.0-20170130134532-f561c5e57575 // indirect
 	github.com/customerio/gospec v0.0.0-20130710230057-a5cc0e48aa39 // indirect
 	github.com/davecgh/go-spew v1.1.0 // indirect
 	github.com/dchest/uniuri v1.2.0 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/dustin/go-humanize v1.0.0 // indirect
 	github.com/garyburd/redigo v1.6.4 // indirect
 	github.com/golang/glog v1.0.0 // indirect

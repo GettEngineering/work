@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -11,10 +12,11 @@ import (
 )
 
 func TestEnqueue(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
-	enqueuer := NewEnqueuer(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	job, err := enqueuer.Enqueue("wat", Q{"a": 1, "b": "cool"})
 	assert.Nil(t, err)
 	assert.Equal(t, "wat", job.Name)
@@ -26,17 +28,17 @@ func TestEnqueue(t *testing.T) {
 	assert.NoError(t, job.ArgError())
 
 	// Make sure "wat" is in the known jobs
-	assert.EqualValues(t, []string{"wat"}, knownJobs(pool, redisKeyKnownJobs(ns)))
+	assert.EqualValues(t, []string{"wat"}, knownJobs(ctx, redisAdapter, redisKeyKnownJobs(ns)))
 
 	// Make sure the cache is set
 	expiresAt := enqueuer.knownJobs["wat"]
 	assert.True(t, expiresAt > (time.Now().Unix()+290))
 
 	// Make sure the length of the queue is 1
-	assert.EqualValues(t, 1, listSize(pool, redisKeyJobs(ns, "wat")))
+	assert.EqualValues(t, 1, listSize(ctx, redisAdapter, redisKeyJobs(ns, "wat")))
 
 	// Get the job
-	j := jobOnQueue(pool, redisKeyJobs(ns, "wat"))
+	j := jobOnQueue(ctx, redisAdapter, redisKeyJobs(ns, "wat"))
 	assert.Equal(t, "wat", j.Name)
 	assert.True(t, len(j.ID) > 10)                        // Something is in it
 	assert.True(t, j.EnqueuedAt > (time.Now().Unix()-10)) // Within 10 seconds
@@ -49,14 +51,15 @@ func TestEnqueue(t *testing.T) {
 	_, err = enqueuer.Enqueue("wat", Q{"a": 1, "b": "cool"})
 	_, err = enqueuer.Enqueue("wat", Q{"a": 1, "b": "cool"})
 	assert.Nil(t, err)
-	assert.EqualValues(t, 2, listSize(pool, redisKeyJobs(ns, "wat")))
+	assert.EqualValues(t, 2, listSize(ctx, redisAdapter, redisKeyJobs(ns, "wat")))
 }
 
 func TestEnqueueIn(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
-	enqueuer := NewEnqueuer(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 
 	// Set to expired value to make sure we update the set of known jobs
 	enqueuer.knownJobs["wat"] = 4
@@ -75,17 +78,17 @@ func TestEnqueueIn(t *testing.T) {
 	}
 
 	// Make sure "wat" is in the known jobs
-	assert.EqualValues(t, []string{"wat"}, knownJobs(pool, redisKeyKnownJobs(ns)))
+	assert.EqualValues(t, []string{"wat"}, knownJobs(ctx, redisAdapter, redisKeyKnownJobs(ns)))
 
 	// Make sure the cache is set
 	expiresAt := enqueuer.knownJobs["wat"]
 	assert.True(t, expiresAt > (time.Now().Unix()+290))
 
 	// Make sure the length of the scheduled job queue is 1
-	assert.EqualValues(t, 1, zsetSize(pool, redisKeyScheduled(ns)))
+	assert.EqualValues(t, 1, zsetSize(ctx, redisAdapter, redisKeyScheduled(ns)))
 
 	// Get the job
-	score, j := jobOnZset(pool, redisKeyScheduled(ns))
+	score, j := jobOnZset(ctx, redisAdapter, redisKeyScheduled(ns))
 
 	assert.True(t, score > time.Now().Unix()+290)
 	assert.True(t, score <= time.Now().Unix()+300)
@@ -100,10 +103,11 @@ func TestEnqueueIn(t *testing.T) {
 }
 
 func TestEnqueueUnique(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
-	enqueuer := NewEnqueuer(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	var mutex = &sync.Mutex{}
 	job, err := enqueuer.EnqueueUnique("wat", Q{"a": 1, "b": "cool"})
 	assert.NoError(t, err)
@@ -139,7 +143,7 @@ func TestEnqueueUnique(t *testing.T) {
 
 	// Process the queues. Ensure the right number of jobs were processed
 	var wats, taws int64
-	wp := NewWorkerPool(TestContext{}, 3, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 3, ns, redisAdapter)
 	wp.JobWithOptions("wat", JobOptions{Priority: 1, MaxFails: 1}, func(job *Job) error {
 		mutex.Lock()
 		wats++
@@ -177,11 +181,12 @@ func TestEnqueueUnique(t *testing.T) {
 
 // Tests that unique jobs are removed only after job is done or put in dead queue.
 func TestOrderEnqueueUnique(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	job, err := enqueuer.EnqueueUnique("wat", Q{"a": 1, "b": "cool"})
 	require.NotNil(t, job)
 	require.NoError(t, err)
@@ -194,7 +199,7 @@ func TestOrderEnqueueUnique(t *testing.T) {
 		return 1 // 1 second
 	}
 
-	wp := NewWorkerPool(TestContext{}, 3, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 3, ns, redisAdapter)
 	wp.JobWithOptions("wat", JobOptions{Priority: 1, MaxFails: 2, Backoff: backoffCalc}, func(job *Job) error {
 		failCount++
 
@@ -231,10 +236,11 @@ func TestOrderEnqueueUnique(t *testing.T) {
 }
 
 func TestEnqueueUniqueIn(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
-	enqueuer := NewEnqueuer(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 
 	// Enqueue two unique jobs -- ensure one job sticks.
 	job, err := enqueuer.EnqueueUniqueIn("wat", 300, Q{"a": 1, "b": "cool"})
@@ -255,7 +261,7 @@ func TestEnqueueUniqueIn(t *testing.T) {
 	assert.Nil(t, job)
 
 	// Get the job
-	score, j := jobOnZset(pool, redisKeyScheduled(ns))
+	score, j := jobOnZset(ctx, redisAdapter, redisKeyScheduled(ns))
 
 	assert.True(t, score > time.Now().Unix()+290) // We don't want to overwrite the time
 	assert.True(t, score <= time.Now().Unix()+300)
@@ -291,10 +297,11 @@ func TestEnqueueUniqueByKey(t *testing.T) {
 	var arg3 string
 	var arg4 string
 
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
-	enqueuer := NewEnqueuer(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	var mutex = &sync.Mutex{}
 	job, err := enqueuer.EnqueueUniqueByKey("wat", Q{"a": 3, "b": "foo"}, Q{"key": "123"})
 	assert.NoError(t, err)
@@ -322,7 +329,7 @@ func TestEnqueueUniqueByKey(t *testing.T) {
 
 	// Process the queues. Ensure the right number of jobs were processed
 	var wats, taws int64
-	wp := NewWorkerPool(TestContext{}, 3, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 3, ns, redisAdapter)
 	wp.JobWithOptions("wat", JobOptions{Priority: 1, MaxFails: 1}, func(job *Job) error {
 		mutex.Lock()
 		argA := job.Args["a"].(float64)
@@ -373,11 +380,12 @@ func TestEnqueueUniqueByKey(t *testing.T) {
 
 // Tests that unique by key jobs are removed only after job is done or put in dead queue.
 func TestOrderEnqueueUniqueByKey(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	job, err := enqueuer.EnqueueUniqueByKey("wat", Q{"a": 1, "b": "cool"}, Q{"key": "123"})
 	require.NotNil(t, job)
 	require.NoError(t, err)
@@ -390,7 +398,7 @@ func TestOrderEnqueueUniqueByKey(t *testing.T) {
 		return 1 // 1 second
 	}
 
-	wp := NewWorkerPool(TestContext{}, 3, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 3, ns, redisAdapter)
 	wp.JobWithOptions("wat", JobOptions{Priority: 1, MaxFails: 2, Backoff: backoffCalc}, func(job *Job) error {
 		failCount++
 
@@ -427,10 +435,11 @@ func TestOrderEnqueueUniqueByKey(t *testing.T) {
 }
 
 func TestEnqueueUniqueInByKey(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
-	enqueuer := NewEnqueuer(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 
 	// Enqueue two unique jobs -- ensure one job sticks.
 	job, err := enqueuer.EnqueueUniqueInByKey("wat", 300, Q{"a": 1, "b": "cool"}, Q{"key": "123"})
@@ -446,14 +455,14 @@ func TestEnqueueUniqueInByKey(t *testing.T) {
 		assert.EqualValues(t, job.EnqueuedAt+300, job.RunAt)
 	}
 
-	assert.True(t, exists(pool, job.UniqueKey), "unique keys exists")
+	assert.True(t, exists(ctx, redisAdapter, job.UniqueKey), "unique keys exists")
 
 	job, err = enqueuer.EnqueueUniqueInByKey("wat", 10, Q{"a": 1, "b": "cool"}, Q{"key": "123"})
 	assert.NoError(t, err)
 	assert.Nil(t, job)
 
 	// Get the job
-	score, j := jobOnZset(pool, redisKeyScheduled(ns))
+	score, j := jobOnZset(ctx, redisAdapter, redisKeyScheduled(ns))
 
 	assert.True(t, score > time.Now().Unix()+290) // We don't want to overwrite the time
 	assert.True(t, score <= time.Now().Unix()+300)
@@ -469,10 +478,11 @@ func TestEnqueueUniqueInByKey(t *testing.T) {
 }
 
 func TestRunEnqueueUniqueInByKey(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
-	enqueuer := NewEnqueuer(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 
 	// Enqueue two unique jobs -- ensure one job sticks.
 	job, err := enqueuer.EnqueueUniqueInByKey("wat", 1, Q{"a": 1, "b": "cool"}, Q{"key": "123"})
@@ -483,7 +493,7 @@ func TestRunEnqueueUniqueInByKey(t *testing.T) {
 	var argA float64
 	var argB string
 
-	wp := NewWorkerPool(TestContext{}, 3, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 3, ns, redisAdapter)
 	wp.JobWithOptions("wat", JobOptions{Priority: 1, MaxFails: 1}, func(job *Job) error {
 		argA = job.Args["a"].(float64)
 		argB = job.Args["b"].(string)
@@ -508,14 +518,14 @@ func TestRunEnqueueUniqueInByKey(t *testing.T) {
 	require.Equal(t, "cool", argB)
 
 	// Nothing in retries or dead.
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyRetry(ns)), "retry queue must be empty")
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyDead(ns)), "dead queue must be empty")
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyRetry(ns)), "retry queue must be empty")
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyDead(ns)), "dead queue must be empty")
 
 	// Nothing in the queues or in-progress queues.
-	assert.EqualValues(t, 0, listSize(pool, redisKeyScheduled(ns)), "scheduled queue must be empty")
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, "wat")), "jobs queue must be empty")
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, wp.workerPoolID, "wat")), "inprocess queue must be empty")
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyScheduled(ns)), "scheduled queue must be empty")
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, "wat")), "jobs queue must be empty")
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, wp.workerPoolID, "wat")), "inprocess queue must be empty")
 
 	// No unique keys.
-	assert.False(t, exists(pool, job.UniqueKey), "unique keys must be empty")
+	assert.False(t, exists(ctx, redisAdapter, job.UniqueKey), "unique keys must be empty")
 }

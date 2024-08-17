@@ -1,21 +1,23 @@
 package work
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestRequeue(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	tMock := nowEpochSeconds() - 10
 	setNowEpochSecondsMock(tMock)
 	defer resetNowEpochSecondsMock()
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.EnqueueIn("wat", -9, nil)
 	assert.NoError(t, err)
 	_, err = enqueuer.EnqueueIn("wat", -9, nil)
@@ -29,17 +31,17 @@ func TestRequeue(t *testing.T) {
 
 	resetNowEpochSecondsMock()
 
-	re := newRequeuer(ns, pool, redisKeyScheduled(ns), []string{"wat", "foo", "bar"})
+	re := newRequeuer(ns, redisAdapter, redisKeyScheduled(ns), []string{"wat", "foo", "bar"})
 	re.start()
 	re.drain()
 	re.stop()
 
-	assert.EqualValues(t, 2, listSize(pool, redisKeyJobs(ns, "wat")))
-	assert.EqualValues(t, 1, listSize(pool, redisKeyJobs(ns, "foo")))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, "bar")))
-	assert.EqualValues(t, 2, zsetSize(pool, redisKeyScheduled(ns)))
+	assert.EqualValues(t, 2, listSize(ctx, redisAdapter, redisKeyJobs(ns, "wat")))
+	assert.EqualValues(t, 1, listSize(ctx, redisAdapter, redisKeyJobs(ns, "foo")))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, "bar")))
+	assert.EqualValues(t, 2, zsetSize(ctx, redisAdapter, redisKeyScheduled(ns)))
 
-	j := jobOnQueue(pool, redisKeyJobs(ns, "foo"))
+	j := jobOnQueue(ctx, redisAdapter, redisKeyJobs(ns, "foo"))
 	assert.Equal(t, j.Name, "foo")
 
 	// Because we mocked time to 10 seconds ago above, the job was put on the zset with t=10 secs ago
@@ -50,30 +52,31 @@ func TestRequeue(t *testing.T) {
 }
 
 func TestRequeueUnknown(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	tMock := nowEpochSeconds() - 10
 	setNowEpochSecondsMock(tMock)
 	defer resetNowEpochSecondsMock()
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.EnqueueIn("wat", -9, nil)
 	assert.NoError(t, err)
 
 	nowish := nowEpochSeconds()
 	setNowEpochSecondsMock(nowish)
 
-	re := newRequeuer(ns, pool, redisKeyScheduled(ns), []string{"bar"})
+	re := newRequeuer(ns, redisAdapter, redisKeyScheduled(ns), []string{"bar"})
 	re.start()
 	re.drain()
 	re.stop()
 
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyScheduled(ns)))
-	assert.EqualValues(t, 1, zsetSize(pool, redisKeyDead(ns)))
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyScheduled(ns)))
+	assert.EqualValues(t, 1, zsetSize(ctx, redisAdapter, redisKeyDead(ns)))
 
-	rank, job := jobOnZset(pool, redisKeyDead(ns))
+	rank, job := jobOnZset(ctx, redisAdapter, redisKeyDead(ns))
 
 	assert.Equal(t, nowish, rank)
 	assert.Equal(t, nowish, job.FailedAt)

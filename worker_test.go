@@ -1,24 +1,31 @@
 package work
 
 import (
+	"context"
 	"fmt"
-	"strconv"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	goredisv8 "github.com/go-redis/redis/v8"
 	"github.com/gomodule/redigo/redis"
 	"github.com/stretchr/testify/assert"
+
+	workredis "github.com/GettEngineering/work/redis"
+	goredisv8adapter "github.com/GettEngineering/work/redis/adapters/goredisv8"
+	redigoadapter "github.com/GettEngineering/work/redis/adapters/redigo"
 )
 
 func TestWorkerBasics(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 	job1 := "job1"
 	job2 := "job2"
 	job3 := "job3"
 
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	var arg1 float64
 	var arg2 float64
@@ -53,7 +60,7 @@ func TestWorkerBasics(t *testing.T) {
 		},
 	}
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
 	_, err = enqueuer.Enqueue(job2, Q{"a": 2})
@@ -61,7 +68,7 @@ func TestWorkerBasics(t *testing.T) {
 	_, err = enqueuer.Enqueue(job3, Q{"a": 3})
 	assert.Nil(t, err)
 
-	w := newWorker(ns, "1", pool, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
 	w.start()
 	w.drain()
 	w.stop()
@@ -72,29 +79,30 @@ func TestWorkerBasics(t *testing.T) {
 	assert.EqualValues(t, 3.0, arg3)
 
 	// nothing in retries or dead
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyRetry(ns)))
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyDead(ns)))
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyRetry(ns)))
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyDead(ns)))
 
 	// Nothing in the queues or in-progress queues
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job1)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job2)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job3)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job2)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job3)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job2)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job3)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job2)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job3)))
 
 	// nothing in the worker status
-	h := readHash(pool, redisKeyWorkerObservation(ns, w.workerID))
+	h := readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, w.workerID))
 	assert.EqualValues(t, 0, len(h))
 }
 
 func TestWorkerInProgress(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 	job1 := "job1"
-	deleteQueue(pool, ns, job1)
-	deleteRetryAndDead(pool, ns)
-	deletePausedAndLockedKeys(ns, job1, pool)
+	deleteQueue(ctx, redisAdapter, ns, job1)
+	deleteRetryAndDead(ctx, redisAdapter, ns)
+	deletePausedAndLockedKeys(ctx, ns, job1, redisAdapter)
 
 	jobTypes := make(map[string]*jobType)
 	jobTypes[job1] = &jobType{
@@ -107,24 +115,24 @@ func TestWorkerInProgress(t *testing.T) {
 		},
 	}
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
 
-	w := newWorker(ns, "1", pool, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
 	w.start()
 
 	// instead of w.forceIter(), we'll wait for 10 milliseconds to let the job start
 	// The job will then sleep for 30ms. In that time, we should be able to see something in the in-progress queue.
 	time.Sleep(10 * time.Millisecond)
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job1)))
-	assert.EqualValues(t, 1, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
-	assert.EqualValues(t, 1, getInt64(pool, redisKeyJobsLock(ns, job1)))
-	assert.EqualValues(t, 1, hgetInt64(pool, redisKeyJobsLockInfo(ns, job1), w.poolID))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+	assert.EqualValues(t, 1, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
+	assert.EqualValues(t, 1, getInt64(ctx, redisAdapter, redisKeyJobsLock(ns, job1)))
+	assert.EqualValues(t, 1, hgetInt64(ctx, redisAdapter, redisKeyJobsLockInfo(ns, job1), w.poolID))
 
 	// nothing in the worker status
 	w.observer.drain()
-	h := readHash(pool, redisKeyWorkerObservation(ns, w.workerID))
+	h := readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, w.workerID))
 	assert.Equal(t, job1, h["job_name"])
 	assert.Equal(t, `{"a":1}`, h["args"])
 	// NOTE: we could check for job_id and started_at, but it's a PITA and it's tested in observer_test.
@@ -133,21 +141,22 @@ func TestWorkerInProgress(t *testing.T) {
 	w.stop()
 
 	// At this point, it should all be empty.
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job1)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
 
 	// nothing in the worker status
-	h = readHash(pool, redisKeyWorkerObservation(ns, w.workerID))
+	h = readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, w.workerID))
 	assert.EqualValues(t, 0, len(h))
 }
 
 func TestWorkerRetry(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 	job1 := "job1"
-	deleteQueue(pool, ns, job1)
-	deleteRetryAndDead(pool, ns)
-	deletePausedAndLockedKeys(ns, job1, pool)
+	deleteQueue(ctx, redisAdapter, ns, job1)
+	deleteRetryAndDead(ctx, redisAdapter, ns)
+	deletePausedAndLockedKeys(ctx, ns, job1, redisAdapter)
 
 	jobTypes := make(map[string]*jobType)
 	jobTypes[job1] = &jobType{
@@ -159,24 +168,24 @@ func TestWorkerRetry(t *testing.T) {
 		},
 	}
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
-	w := newWorker(ns, "1", pool, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
 	w.start()
 	w.drain()
 	w.stop()
 
 	// Ensure the right stuff is in our queues:
-	assert.EqualValues(t, 1, zsetSize(pool, redisKeyRetry(ns)))
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyDead(ns)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job1)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
-	assert.EqualValues(t, 0, getInt64(pool, redisKeyJobsLock(ns, job1)))
-	assert.EqualValues(t, 0, hgetInt64(pool, redisKeyJobsLockInfo(ns, job1), w.poolID))
+	assert.EqualValues(t, 1, zsetSize(ctx, redisAdapter, redisKeyRetry(ns)))
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyDead(ns)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
+	assert.EqualValues(t, 0, getInt64(ctx, redisAdapter, redisKeyJobsLock(ns, job1)))
+	assert.EqualValues(t, 0, hgetInt64(ctx, redisAdapter, redisKeyJobsLockInfo(ns, job1), w.poolID))
 
 	// Get the job on the retry queue
-	ts, job := jobOnZset(pool, redisKeyRetry(ns))
+	ts, job := jobOnZset(ctx, redisAdapter, redisKeyRetry(ns))
 
 	assert.True(t, ts > nowEpochSeconds())      // enqueued in the future
 	assert.True(t, ts < (nowEpochSeconds()+80)) // but less than a minute from now (first failure)
@@ -189,11 +198,12 @@ func TestWorkerRetry(t *testing.T) {
 
 // Check if a custom backoff function functions functionally.
 func TestWorkerRetryWithCustomBackoff(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 	job1 := "job1"
-	deleteQueue(pool, ns, job1)
-	deleteRetryAndDead(pool, ns)
+	deleteQueue(ctx, redisAdapter, ns, job1)
+	deleteRetryAndDead(ctx, redisAdapter, ns)
 	calledCustom := 0
 
 	custombo := func(job *Job) int64 {
@@ -211,22 +221,22 @@ func TestWorkerRetryWithCustomBackoff(t *testing.T) {
 		},
 	}
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
-	w := newWorker(ns, "1", pool, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
 	w.start()
 	w.drain()
 	w.stop()
 
 	// Ensure the right stuff is in our queues:
-	assert.EqualValues(t, 1, zsetSize(pool, redisKeyRetry(ns)))
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyDead(ns)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job1)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
+	assert.EqualValues(t, 1, zsetSize(ctx, redisAdapter, redisKeyRetry(ns)))
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyDead(ns)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
 
 	// Get the job on the retry queue
-	ts, job := jobOnZset(pool, redisKeyRetry(ns))
+	ts, job := jobOnZset(ctx, redisAdapter, redisKeyRetry(ns))
 
 	assert.True(t, ts > nowEpochSeconds())      // enqueued in the future
 	assert.True(t, ts < (nowEpochSeconds()+10)) // but less than ten secs in
@@ -239,14 +249,15 @@ func TestWorkerRetryWithCustomBackoff(t *testing.T) {
 }
 
 func TestWorkerDead(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 	job1 := "job1"
 	job2 := "job2"
-	deleteQueue(pool, ns, job1)
-	deleteQueue(pool, ns, job2)
-	deleteRetryAndDead(pool, ns)
-	deletePausedAndLockedKeys(ns, job1, pool)
+	deleteQueue(ctx, redisAdapter, ns, job1)
+	deleteQueue(ctx, redisAdapter, ns, job2)
+	deleteRetryAndDead(ctx, redisAdapter, ns)
+	deletePausedAndLockedKeys(ctx, ns, job1, redisAdapter)
 
 	jobTypes := make(map[string]*jobType)
 	jobTypes[job1] = &jobType{
@@ -266,32 +277,32 @@ func TestWorkerDead(t *testing.T) {
 		},
 	}
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue(job1, nil)
 	assert.Nil(t, err)
 	_, err = enqueuer.Enqueue(job2, nil)
 	assert.Nil(t, err)
-	w := newWorker(ns, "1", pool, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
 	w.start()
 	w.drain()
 	w.stop()
 
 	// Ensure the right stuff is in our queues:
-	assert.EqualValues(t, 0, zsetSize(pool, redisKeyRetry(ns)))
-	assert.EqualValues(t, 1, zsetSize(pool, redisKeyDead(ns)))
+	assert.EqualValues(t, 0, zsetSize(ctx, redisAdapter, redisKeyRetry(ns)))
+	assert.EqualValues(t, 1, zsetSize(ctx, redisAdapter, redisKeyDead(ns)))
 
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job1)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
-	assert.EqualValues(t, 0, getInt64(pool, redisKeyJobsLock(ns, job1)))
-	assert.EqualValues(t, 0, hgetInt64(pool, redisKeyJobsLockInfo(ns, job1), w.poolID))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
+	assert.EqualValues(t, 0, getInt64(ctx, redisAdapter, redisKeyJobsLock(ns, job1)))
+	assert.EqualValues(t, 0, hgetInt64(ctx, redisAdapter, redisKeyJobsLockInfo(ns, job1), w.poolID))
 
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job2)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job2)))
-	assert.EqualValues(t, 0, getInt64(pool, redisKeyJobsLock(ns, job2)))
-	assert.EqualValues(t, 0, hgetInt64(pool, redisKeyJobsLockInfo(ns, job2), w.poolID))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job2)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job2)))
+	assert.EqualValues(t, 0, getInt64(ctx, redisAdapter, redisKeyJobsLock(ns, job2)))
+	assert.EqualValues(t, 0, hgetInt64(ctx, redisAdapter, redisKeyJobsLockInfo(ns, job2), w.poolID))
 
 	// Get the job on the dead queue
-	ts, job := jobOnZset(pool, redisKeyDead(ns))
+	ts, job := jobOnZset(ctx, redisAdapter, redisKeyDead(ns))
 
 	assert.True(t, ts <= nowEpochSeconds())
 
@@ -302,12 +313,13 @@ func TestWorkerDead(t *testing.T) {
 }
 
 func TestWorkersPaused(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 	job1 := "job1"
-	deleteQueue(pool, ns, job1)
-	deleteRetryAndDead(pool, ns)
-	deletePausedAndLockedKeys(ns, job1, pool)
+	deleteQueue(ctx, redisAdapter, ns, job1)
+	deleteRetryAndDead(ctx, redisAdapter, ns)
+	deletePausedAndLockedKeys(ctx, ns, job1, redisAdapter)
 
 	jobTypes := make(map[string]*jobType)
 	jobTypes[job1] = &jobType{
@@ -320,13 +332,13 @@ func TestWorkersPaused(t *testing.T) {
 		},
 	}
 
-	enqueuer := NewEnqueuer(ns, pool)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
 
-	w := newWorker(ns, "1", pool, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
 	// pause the jobs prior to starting
-	err = pauseJobs(ns, job1, pool)
+	err = pauseJobs(ctx, ns, job1, redisAdapter)
 	assert.Nil(t, err)
 	// reset the backoff times to help with testing
 	sleepBackoffsInMilliseconds = []int64{10, 10, 10, 10, 10}
@@ -335,56 +347,49 @@ func TestWorkersPaused(t *testing.T) {
 	// make sure the jobs stay in the still in the run queue and not moved to in progress
 	for i := 0; i < 2; i++ {
 		time.Sleep(10 * time.Millisecond)
-		assert.EqualValues(t, 1, listSize(pool, redisKeyJobs(ns, job1)))
-		assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
+		assert.EqualValues(t, 1, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+		assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
 	}
 
 	// now unpause the jobs and check that they start
-	err = unpauseJobs(ns, job1, pool)
+	err = unpauseJobs(ctx, ns, job1, redisAdapter)
 	assert.Nil(t, err)
 	// sleep through 2 backoffs to make sure we allow enough time to start running
 	time.Sleep(20 * time.Millisecond)
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job1)))
-	assert.EqualValues(t, 1, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+	assert.EqualValues(t, 1, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
 
 	w.observer.drain()
-	h := readHash(pool, redisKeyWorkerObservation(ns, w.workerID))
+	h := readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, w.workerID))
 	assert.Equal(t, job1, h["job_name"])
 	assert.Equal(t, `{"a":1}`, h["args"])
 	w.drain()
 	w.stop()
 
 	// At this point, it should all be empty.
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobs(ns, job1)))
-	assert.EqualValues(t, 0, listSize(pool, redisKeyJobsInProgress(ns, "1", job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobs(ns, job1)))
+	assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, "1", job1)))
 
 	// nothing in the worker status
-	h = readHash(pool, redisKeyWorkerObservation(ns, w.workerID))
+	h = readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, w.workerID))
 	assert.EqualValues(t, 0, len(h))
 }
 
 // Test that in the case of an unavailable Redis server,
 // the worker loop exits in the case of a WorkerPool.Stop
 func TestStop(t *testing.T) {
-	redisPool := &redis.Pool{
-		Dial: func() (redis.Conn, error) {
-			c, err := redis.Dial("tcp", "notworking:6379", redis.DialConnectTimeout(1*time.Second))
-			if err != nil {
-				return nil, err
-			}
-			return c, nil
-		},
-	}
-	wp := NewWorkerPool(TestContext{}, 10, "work", redisPool)
+	redisAdapter := newTestBrokenRedis()
+	wp := NewWorkerPool(TestContext{}, 10, "work", redisAdapter)
 	wp.Start()
 	wp.Stop()
 }
 
 func BenchmarkJobProcessing(b *testing.B) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
-	enqueuer := NewEnqueuer(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 
 	for i := 0; i < b.N; i++ {
 		_, err := enqueuer.Enqueue("wat", nil)
@@ -393,7 +398,7 @@ func BenchmarkJobProcessing(b *testing.B) {
 		}
 	}
 
-	wp := NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(c *TestContext, job *Job) error {
 		return nil
 	})
@@ -405,127 +410,149 @@ func BenchmarkJobProcessing(b *testing.B) {
 	wp.Stop()
 }
 
-func newTestPool(addr string) *redis.Pool {
-	return &redis.Pool{
-		MaxActive:   10,
-		MaxIdle:     10,
-		IdleTimeout: 240 * time.Second,
-		Dial: func() (redis.Conn, error) {
-			c, err := redis.Dial("tcp", addr)
-			if err != nil {
-				return nil, err
-			}
-			return c, nil
-		},
-		Wait: true,
+func newTestRedis(addr string) workredis.Redis {
+	switch os.Getenv("TEST_REDIS_ADAPTER") {
+	case "goredisv8":
+		rdb := goredisv8.NewClient(&goredisv8.Options{
+			Addr:     addr,
+			Password: "",
+			DB:       0,
+		})
+		return goredisv8adapter.NewGoredisAdapter(rdb)
+	case "redigo":
+		fallthrough
+	default:
+		pool := &redis.Pool{
+			MaxActive:   10,
+			MaxIdle:     10,
+			IdleTimeout: 240 * time.Second,
+			Dial: func() (redis.Conn, error) {
+				c, err := redis.Dial("tcp", addr)
+				if err != nil {
+					return nil, err
+				}
+				return c, nil
+			},
+			Wait: true,
+		}
+		return redigoadapter.NewRedigoAdapter(pool)
 	}
 }
 
-func deleteQueue(pool *redis.Pool, namespace, jobName string) {
-	conn := pool.Get()
-	defer conn.Close()
+func newTestBrokenRedis() workredis.Redis {
+	const addr = "notworking-redis:6379"
 
-	_, err := conn.Do("DEL", redisKeyJobs(namespace, jobName), redisKeyJobsInProgress(namespace, "1", jobName))
+	switch os.Getenv("TEST_REDIS_ADAPTER") {
+	case "goredisv8":
+		rdb := goredisv8.NewClient(&goredisv8.Options{
+			Addr:     addr,
+			Password: "",
+			DB:       0,
+		})
+		return goredisv8adapter.NewGoredisAdapter(rdb)
+	case "redigo":
+		fallthrough
+	default:
+		pool := &redis.Pool{
+			Dial: func() (redis.Conn, error) {
+				c, err := redis.Dial("tcp", addr, redis.DialConnectTimeout(1*time.Second))
+				if err != nil {
+					return nil, err
+				}
+				return c, nil
+			},
+		}
+		return redigoadapter.NewRedigoAdapter(pool)
+	}
+}
+
+func deleteQueue(ctx context.Context, redisAdapter workredis.Redis, namespace, jobName string) {
+	err := redisAdapter.Del(ctx, redisKeyJobs(namespace, jobName), redisKeyJobsInProgress(namespace, "1", jobName))
 	if err != nil {
 		panic("could not delete queue: " + err.Error())
 	}
 }
 
-func deleteRetryAndDead(pool *redis.Pool, namespace string) {
-	conn := pool.Get()
-	defer conn.Close()
-
-	_, err := conn.Do("DEL", redisKeyRetry(namespace), redisKeyDead(namespace))
+func deleteRetryAndDead(ctx context.Context, redisAdapter workredis.Redis, namespace string) {
+	err := redisAdapter.Del(ctx, redisKeyRetry(namespace), redisKeyDead(namespace))
 	if err != nil {
 		panic("could not delete retry/dead queue: " + err.Error())
 	}
 }
 
-func zsetSize(pool *redis.Pool, key string) int64 {
-	conn := pool.Get()
-	defer conn.Close()
-
-	v, err := redis.Int64(conn.Do("ZCARD", key))
+func zsetSize(ctx context.Context, redisAdapter workredis.Redis, key string) int64 {
+	v, err := redisAdapter.ZCard(ctx, key)
 	if err != nil {
 		panic("could not get ZSET size: " + err.Error())
 	}
 	return v
 }
 
-func listSize(pool *redis.Pool, key string) int64 {
-	conn := pool.Get()
-	defer conn.Close()
-
-	v, err := redis.Int64(conn.Do("LLEN", key))
+func listSize(ctx context.Context, redisAdapter workredis.Redis, key string) int64 {
+	v, err := redisAdapter.LLen(ctx, key).Result()
 	if err != nil {
 		panic("could not get list length: " + err.Error())
 	}
 	return v
 }
 
-func getInt64(pool *redis.Pool, key string) int64 {
-	conn := pool.Get()
-	defer conn.Close()
-
-	v, err := redis.Int64(conn.Do("GET", key))
+func getInt64(ctx context.Context, redisAdapter workredis.Redis, key string) int64 {
+	v, err := redisAdapter.Get(ctx, key).Int64()
 	if err != nil {
 		panic("could not GET int64: " + err.Error())
 	}
 	return v
 }
 
-func exists(pool *redis.Pool, key string) bool {
-	conn := pool.Get()
-	defer conn.Close()
-
-	v, err := redis.Bool(conn.Do("EXISTS", key))
+func exists(ctx context.Context, redisAdapter workredis.Redis, key string) bool {
+	v, err := redisAdapter.Exists(ctx, key)
 	if err != nil {
 		panic("could not EXISTS: " + err.Error())
 	}
 	return v
 }
 
-func hgetInt64(pool *redis.Pool, redisKey, hashKey string) int64 {
-	conn := pool.Get()
-	defer conn.Close()
-
-	v, err := redis.Int64(conn.Do("HGET", redisKey, hashKey))
+func hgetInt64(ctx context.Context, redisAdapter workredis.Redis, redisKey, hashKey string) int64 {
+	v, err := redisAdapter.HGet(ctx, redisKey, hashKey).Int64()
 	if err != nil {
 		panic("could not HGET int64: " + err.Error())
 	}
 	return v
 }
 
-func jobOnZset(pool *redis.Pool, key string) (int64, *Job) {
-	conn := pool.Get()
-	defer conn.Close()
-
-	v, err := conn.Do("ZRANGE", key, 0, 0, "WITHSCORES")
+func jobOnZset(ctx context.Context, redisAdapter workredis.Redis, key string) (int64, *Job) {
+	r, err := redisAdapter.ZRangeWithScores(ctx, key, 0, 0)
 	if err != nil {
 		panic("ZRANGE error: " + err.Error())
 	}
 
-	vv := v.([]interface{})
+	for r.Next() {
+		vv, score := r.Val()
 
-	job, err := newJob(vv[0].([]byte), nil, nil)
-	if err != nil {
-		panic("couldn't get job: " + err.Error())
+		var member []byte
+
+		switch vv := vv.(type) {
+		case []byte:
+			member = vv
+		case string:
+			member = []byte(vv)
+		default:
+			panic("expect member []byte or string")
+		}
+
+		job, err := newJob(member, nil, nil)
+		if err != nil {
+			panic("couldn't get job: " + err.Error())
+		}
+
+		return int64(score), job
 	}
 
-	score := vv[1].([]byte)
-	scoreInt, err := strconv.ParseInt(string(score), 10, 64)
-	if err != nil {
-		panic("couldn't parse int: " + err.Error())
-	}
-
-	return scoreInt, job
+	panic("couldn't get job")
 }
 
-func jobOnQueue(pool *redis.Pool, key string) *Job {
-	conn := pool.Get()
-	defer conn.Close()
-
-	rawJSON, err := redis.Bytes(conn.Do("RPOP", key))
+func jobOnQueue(ctx context.Context, redisAdapter workredis.Redis, key string) *Job {
+	rawJSON, err := redisAdapter.RPop(ctx, key).Bytes()
 	if err != nil {
 		panic("could RPOP from job queue: " + err.Error())
 	}
@@ -538,63 +565,48 @@ func jobOnQueue(pool *redis.Pool, key string) *Job {
 	return job
 }
 
-func knownJobs(pool *redis.Pool, key string) []string {
-	conn := pool.Get()
-	defer conn.Close()
-
-	jobNames, err := redis.Strings(conn.Do("SMEMBERS", key))
+func knownJobs(ctx context.Context, redisAdapter workredis.Redis, key string) []string {
+	jobNames, err := redisAdapter.SMembers(ctx, key)
 	if err != nil {
 		panic(err)
 	}
 	return jobNames
 }
 
-func cleanKeyspace(namespace string, pool *redis.Pool) {
-	conn := pool.Get()
-	defer conn.Close()
-
-	keys, err := redis.Strings(conn.Do("KEYS", namespace+"*"))
+func cleanKeyspace(ctx context.Context, namespace string, redisAdapter workredis.Redis) {
+	keys, err := redisAdapter.Keys(ctx, namespace+"*")
 	if err != nil {
 		panic("could not get keys: " + err.Error())
 	}
 	for _, k := range keys {
-		if _, err := conn.Do("DEL", k); err != nil {
+		if err := redisAdapter.Del(ctx, k); err != nil {
 			panic("could not del: " + err.Error())
 		}
 	}
 }
 
-func pauseJobs(namespace, jobName string, pool *redis.Pool) error {
-	conn := pool.Get()
-	defer conn.Close()
-
-	if _, err := conn.Do("SET", redisKeyJobsPaused(namespace, jobName), "1"); err != nil {
+func pauseJobs(ctx context.Context, namespace, jobName string, redisAdapter workredis.Redis) error {
+	if err := redisAdapter.Set(ctx, redisKeyJobsPaused(namespace, jobName), "1"); err != nil {
 		return err
 	}
 	return nil
 }
 
-func unpauseJobs(namespace, jobName string, pool *redis.Pool) error {
-	conn := pool.Get()
-	defer conn.Close()
-
-	if _, err := conn.Do("DEL", redisKeyJobsPaused(namespace, jobName)); err != nil {
+func unpauseJobs(ctx context.Context, namespace, jobName string, redisAdapter workredis.Redis) error {
+	if err := redisAdapter.Del(ctx, redisKeyJobsPaused(namespace, jobName)); err != nil {
 		return err
 	}
 	return nil
 }
 
-func deletePausedAndLockedKeys(namespace, jobName string, pool *redis.Pool) error {
-	conn := pool.Get()
-	defer conn.Close()
-
-	if _, err := conn.Do("DEL", redisKeyJobsPaused(namespace, jobName)); err != nil {
+func deletePausedAndLockedKeys(ctx context.Context, namespace, jobName string, redisAdapter workredis.Redis) error {
+	if err := redisAdapter.Del(ctx, redisKeyJobsPaused(namespace, jobName)); err != nil {
 		return err
 	}
-	if _, err := conn.Do("DEL", redisKeyJobsLock(namespace, jobName)); err != nil {
+	if err := redisAdapter.Del(ctx, redisKeyJobsLock(namespace, jobName)); err != nil {
 		return err
 	}
-	if _, err := conn.Do("DEL", redisKeyJobsLockInfo(namespace, jobName)); err != nil {
+	if err := redisAdapter.Del(ctx, redisKeyJobsLockInfo(namespace, jobName)); err != nil {
 		return err
 	}
 	return nil
@@ -609,11 +621,11 @@ type emptyCtx struct{}
 // https://github.com/gocraft/work/issues/24
 func TestWorkerPoolStop(t *testing.T) {
 	ns := "will_it_end"
-	pool := newTestPool(":6379")
+	redisAdapter := newTestRedis(":6379")
 	var started, stopped int32
 	num_iters := 30
 
-	wp := NewWorkerPool(emptyCtx{}, 2, ns, pool)
+	wp := NewWorkerPool(emptyCtx{}, 2, ns, redisAdapter)
 
 	wp.Job("sample_job", func(c *emptyCtx, job *Job) error {
 		atomic.AddInt32(&started, 1)
@@ -622,7 +634,7 @@ func TestWorkerPoolStop(t *testing.T) {
 		return nil
 	})
 
-	var enqueuer = NewEnqueuer(ns, pool)
+	var enqueuer = NewEnqueuer(ns, redisAdapter)
 
 	for i := 0; i <= num_iters; i++ {
 		enqueuer.Enqueue("sample_job", Q{})

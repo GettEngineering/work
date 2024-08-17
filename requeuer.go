@@ -1,17 +1,20 @@
 package work
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
+	"github.com/GettEngineering/work/redis"
 )
 
 type requeuer struct {
-	namespace string
-	pool      *redis.Pool
+	namespace    string
+	redisAdapter redis.Redis
 
-	redisRequeueScript *redis.Script
+	redisRequeueScript redis.Script
+	redisRequeueKeys   []string
 	redisRequeueArgs   []interface{}
 
 	stopChan         chan struct{}
@@ -21,21 +24,25 @@ type requeuer struct {
 	doneDrainingChan chan struct{}
 }
 
-func newRequeuer(namespace string, pool *redis.Pool, requeueKey string, jobNames []string) *requeuer {
-	args := make([]interface{}, 0, len(jobNames)+2+2)
-	args = append(args, requeueKey)              // KEY[1]
-	args = append(args, redisKeyDead(namespace)) // KEY[2]
+func newRequeuer(namespace string, redisAdapter redis.Redis, requeueKey string, jobNames []string) *requeuer {
+	keys := make([]string, 0, len(jobNames)+2+2)
+	keys = append(keys, requeueKey)              // KEY[1]
+	keys = append(keys, redisKeyDead(namespace)) // KEY[2]
 	for _, jobName := range jobNames {
-		args = append(args, redisKeyJobs(namespace, jobName)) // KEY[3, 4, ...]
+		keys = append(keys, redisKeyJobs(namespace, jobName)) // KEY[3, 4, ...]
 	}
-	args = append(args, redisKeyJobsPrefix(namespace)) // ARGV[1]
-	args = append(args, 0)                             // ARGV[2] -- NOTE: We're going to change this one on every call
+
+	args := []any{
+		redisKeyJobsPrefix(namespace), // ARGV[1]
+		0,                             // ARGV[2] -- NOTE: We're going to change this one on every call
+	}
 
 	return &requeuer{
-		namespace: namespace,
-		pool:      pool,
+		namespace:    namespace,
+		redisAdapter: redisAdapter,
 
-		redisRequeueScript: redis.NewScript(len(jobNames)+2, redisLuaZremLpushCmd),
+		redisRequeueScript: redisAdapter.NewScript(redisLuaZremLpushCmd, len(jobNames)+2),
+		redisRequeueKeys:   keys,
 		redisRequeueArgs:   args,
 
 		stopChan:         make(chan struct{}),
@@ -61,6 +68,8 @@ func (r *requeuer) drain() {
 }
 
 func (r *requeuer) loop() {
+	ctx := context.TODO()
+
 	// Just do this simple thing for now.
 	// If we have 100 processes all running requeuers,
 	// there's probably too much hitting redis.
@@ -73,24 +82,21 @@ func (r *requeuer) loop() {
 			r.doneStoppingChan <- struct{}{}
 			return
 		case <-r.drainChan:
-			for r.process() {
+			for r.process(ctx) {
 			}
 			r.doneDrainingChan <- struct{}{}
 		case <-ticker:
-			for r.process() {
+			for r.process(ctx) {
 			}
 		}
 	}
 }
 
-func (r *requeuer) process() bool {
-	conn := r.pool.Get()
-	defer conn.Close()
-
+func (r *requeuer) process(ctx context.Context) bool {
 	r.redisRequeueArgs[len(r.redisRequeueArgs)-1] = nowEpochSeconds()
 
-	res, err := redis.String(r.redisRequeueScript.Do(conn, r.redisRequeueArgs...))
-	if err == redis.ErrNil {
+	res, err := r.redisRequeueScript.Run(ctx, r.redisRequeueKeys, r.redisRequeueArgs...).Text()
+	if errors.Is(err, redis.Nil) {
 		return false
 	} else if err != nil {
 		logError("requeuer.process", err)

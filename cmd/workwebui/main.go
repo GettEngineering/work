@@ -8,8 +8,13 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/GettEngineering/work/webui"
+	goredisv8 "github.com/go-redis/redis/v8"
 	"github.com/gomodule/redigo/redis"
+
+	workredis "github.com/GettEngineering/work/redis"
+	goredisv8adapter "github.com/GettEngineering/work/redis/adapters/goredisv8"
+	redigoadapter "github.com/GettEngineering/work/redis/adapters/redigo"
+	"github.com/GettEngineering/work/webui"
 )
 
 var (
@@ -34,9 +39,9 @@ func main() {
 		return
 	}
 
-	pool := newPool(*redisHostPort, database)
+	redisAdapter := newRedis(*redisHostPort, database)
 
-	server := webui.NewServer(*redisNamespace, pool, *webHostPort)
+	server := webui.NewServer(*redisNamespace, redisAdapter, *webHostPort)
 	server.Start()
 
 	c := make(chan os.Signal, 1)
@@ -49,14 +54,27 @@ func main() {
 	fmt.Println("\nQuitting...")
 }
 
-func newPool(addr string, database int) *redis.Pool {
-	return &redis.Pool{
-		MaxActive:   3,
-		MaxIdle:     3,
-		IdleTimeout: 240 * time.Second,
-		Dial: func() (redis.Conn, error) {
-			return redis.DialURL(addr, redis.DialDatabase(database))
-		},
-		Wait: true,
+func newRedis(addr string, database int) workredis.Redis {
+	switch os.Getenv("REDIS_ADAPTER") {
+	case "redigo":
+		pool := &redis.Pool{
+			MaxActive:   3,
+			MaxIdle:     3,
+			IdleTimeout: 240 * time.Second,
+			Dial: func() (redis.Conn, error) {
+				return redis.DialURL(addr, redis.DialDatabase(database))
+			},
+			Wait: true,
+		}
+		return redigoadapter.NewRedigoAdapter(pool)
+	case "goredisv8":
+		fallthrough
+	default:
+		rdb := goredisv8.NewClient(&goredisv8.Options{
+			Addr:     addr,
+			Password: "",
+			DB:       database,
+		})
+		return goredisv8adapter.NewGoredisAdapter(rdb)
 	}
 }

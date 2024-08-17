@@ -1,12 +1,15 @@
 package work
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/robfig/cron/v3"
+
+	"github.com/GettEngineering/work/redis"
 )
 
 const (
@@ -16,7 +19,7 @@ const (
 
 type periodicEnqueuer struct {
 	namespace             string
-	pool                  *redis.Pool
+	redisAdapter          redis.Redis
 	periodicJobs          []*periodicJob
 	scheduledPeriodicJobs []*scheduledPeriodicJob
 	stopChan              chan struct{}
@@ -35,10 +38,10 @@ type scheduledPeriodicJob struct {
 	*periodicJob
 }
 
-func newPeriodicEnqueuer(namespace string, pool *redis.Pool, periodicJobs []*periodicJob) *periodicEnqueuer {
+func newPeriodicEnqueuer(namespace string, redisAdapter redis.Redis, periodicJobs []*periodicJob) *periodicEnqueuer {
 	return &periodicEnqueuer{
 		namespace:        namespace,
-		pool:             pool,
+		redisAdapter:     redisAdapter,
 		periodicJobs:     periodicJobs,
 		stopChan:         make(chan struct{}),
 		doneStoppingChan: make(chan struct{}),
@@ -55,12 +58,14 @@ func (pe *periodicEnqueuer) stop() {
 }
 
 func (pe *periodicEnqueuer) loop() {
+	ctx := context.TODO()
+
 	// Begin reaping periodically
 	timer := time.NewTimer(periodicEnqueuerSleep + time.Duration(rand.Intn(30))*time.Second)
 	defer timer.Stop()
 
-	if pe.shouldEnqueue() {
-		err := pe.enqueue()
+	if pe.shouldEnqueue(ctx) {
+		err := pe.enqueue(ctx)
 		if err != nil {
 			logError("periodic_enqueuer.loop.enqueue", err)
 		}
@@ -73,8 +78,8 @@ func (pe *periodicEnqueuer) loop() {
 			return
 		case <-timer.C:
 			timer.Reset(periodicEnqueuerSleep + time.Duration(rand.Intn(30))*time.Second)
-			if pe.shouldEnqueue() {
-				err := pe.enqueue()
+			if pe.shouldEnqueue(ctx) {
+				err := pe.enqueue(ctx)
 				if err != nil {
 					logError("periodic_enqueuer.loop.enqueue", err)
 				}
@@ -83,13 +88,10 @@ func (pe *periodicEnqueuer) loop() {
 	}
 }
 
-func (pe *periodicEnqueuer) enqueue() error {
+func (pe *periodicEnqueuer) enqueue(ctx context.Context) error {
 	now := nowEpochSeconds()
 	nowTime := time.Unix(now, 0)
 	horizon := nowTime.Add(periodicEnqueuerHorizon)
-
-	conn := pe.pool.Get()
-	defer conn.Close()
 
 	for _, pj := range pe.periodicJobs {
 		for t := pj.schedule.Next(nowTime); t.Before(horizon); t = pj.schedule.Next(t) {
@@ -110,24 +112,20 @@ func (pe *periodicEnqueuer) enqueue() error {
 				return err
 			}
 
-			_, err = conn.Do("ZADD", redisKeyScheduled(pe.namespace), epoch, rawJSON)
+			err = pe.redisAdapter.ZAdd(ctx, redisKeyScheduled(pe.namespace), float64(epoch), rawJSON)
 			if err != nil {
 				return err
 			}
 		}
 	}
 
-	_, err := conn.Do("SET", redisKeyLastPeriodicEnqueue(pe.namespace), now)
-
-	return err
+	return pe.redisAdapter.Set(ctx, redisKeyLastPeriodicEnqueue(pe.namespace), now)
 }
 
-func (pe *periodicEnqueuer) shouldEnqueue() bool {
-	conn := pe.pool.Get()
-	defer conn.Close()
+func (pe *periodicEnqueuer) shouldEnqueue(ctx context.Context) bool {
+	lastEnqueue, err := pe.redisAdapter.Get(ctx, redisKeyLastPeriodicEnqueue(pe.namespace)).Int64()
 
-	lastEnqueue, err := redis.Int64(conn.Do("GET", redisKeyLastPeriodicEnqueue(pe.namespace)))
-	if err == redis.ErrNil {
+	if errors.Is(err, redis.Nil) {
 		return true
 	} else if err != nil {
 		logError("periodic_enqueuer.should_enqueue", err)

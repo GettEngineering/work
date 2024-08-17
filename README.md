@@ -21,22 +21,21 @@ To enqueue jobs, you need to make an Enqueuer with a redis namespace and a redig
 package main
 
 import (
-	"github.com/gomodule/redigo/redis"
+	goredisv8 "github.com/go-redis/redis/v8"
+
 	"github.com/GettEngineering/work"
+	goredisv8adapter "github.com/GettEngineering/work/redis/adapters/goredisv8"
 )
 
-// Make a redis pool
-var redisPool = &redis.Pool{
-	MaxActive: 5,
-	MaxIdle: 5,
-	Wait: true,
-	Dial: func() (redis.Conn, error) {
-		return redis.Dial("tcp", ":6379")
-	},
-}
+// Make a redis adapter.
+var redisAdapter = goredisv8adapter.NewGoredisAdapter(
+	goredisv8.NewClient(&goredisv8.Options{
+		Addr: addr,
+	}),
+)
 
 // Make an enqueuer with a particular namespace
-var enqueuer = work.NewEnqueuer("my_app_namespace", redisPool)
+var enqueuer = work.NewEnqueuer("my_app_namespace", redisAdapter)
 
 func main() {
 	// Enqueue a job named "send_email" with the specified parameters.
@@ -57,21 +56,21 @@ In order to process jobs, you'll need to make a WorkerPool. Add middleware and j
 package main
 
 import (
-	"github.com/gomodule/redigo/redis"
-	"github.com/GettEngineering/work"
 	"os"
 	"os/signal"
+
+	goredisv8 "github.com/go-redis/redis/v8"
+
+	"github.com/GettEngineering/work"
+	goredisv8adapter "github.com/GettEngineering/work/redis/adapters/goredisv8"
 )
 
-// Make a redis pool
-var redisPool = &redis.Pool{
-	MaxActive: 5,
-	MaxIdle: 5,
-	Wait: true,
-	Dial: func() (redis.Conn, error) {
-		return redis.Dial("tcp", ":6379")
-	},
-}
+// Make a redis adapter.
+var redisAdapter = goredisv8adapter.NewGoredisAdapter(
+	goredisv8.NewClient(&goredisv8.Options{
+		Addr: addr,
+	}),
+)
 
 type Context struct{
     customerID int64
@@ -82,8 +81,8 @@ func main() {
 	// Context{} is a struct that will be the context for the request.
 	// 10 is the max concurrency
 	// "my_app_namespace" is the Redis namespace
-	// redisPool is a Redis pool
-	pool := work.NewWorkerPool(Context{}, 10, "my_app_namespace", redisPool)
+	// redisAdapter is a Redis-compliant adapter
+	pool := work.NewWorkerPool(Context{}, 10, "my_app_namespace", redisAdapter)
 
 	// Add middleware that will be executed for each job
 	pool.Middleware((*Context).Log)
@@ -152,8 +151,8 @@ func main() {
 	// Context{} is a struct that will be the context for the request.
 	// 10 is the max concurrency
 	// "my_app_namespace" is the Redis namespace and the {} chars forces all of the keys onto a single node
-	// redisPool is a Redis pool
-	pool := work.NewWorkerPool(Context{}, 10, "{my_app_namespace}", redisPool)
+	// redisAdapter is a Redis-compliant adapter 
+	pool := work.NewWorkerPool(Context{}, 10, "{my_app_namespace}", redisAdapter)
 ```
 
 *Note* this is not an issue for Redis Sentinel deployments.
@@ -196,7 +195,7 @@ Then in the web UI, you'll see the status of the worker:
 You can schedule jobs to be executed in the future. To do so, make a new ```Enqueuer``` and call its ```EnqueueIn``` method:
 
 ```go
-enqueuer := work.NewEnqueuer("my_app_namespace", redisPool)
+enqueuer := work.NewEnqueuer("my_app_namespace", redisAdapter)
 secondsInTheFuture := 300
 _, err := enqueuer.EnqueueIn("send_welcome_email", secondsInTheFuture, work.Q{"address": "test@example.com"})
 ```
@@ -206,7 +205,7 @@ _, err := enqueuer.EnqueueIn("send_welcome_email", secondsInTheFuture, work.Q{"a
 You can enqueue unique jobs so that only one job with a given name/arguments exists in the queue at once. For instance, you might have a worker that expires the cache of an object. It doesn't make sense for multiple such jobs to exist at once. Also note that unique jobs are supported for normal enqueues as well as scheduled enqueues.
 
 ```go
-enqueuer := work.NewEnqueuer("my_app_namespace", redisPool)
+enqueuer := work.NewEnqueuer("my_app_namespace", redisAdapter)
 job, err := enqueuer.EnqueueUnique("clear_cache", work.Q{"object_id_": "123"}) // job returned
 job, err = enqueuer.EnqueueUnique("clear_cache", work.Q{"object_id_": "123"}) // job == nil -- this duplicate job isn't enqueued.
 job, err = enqueuer.EnqueueUniqueIn("clear_cache", 300, work.Q{"object_id_": "789"}) // job != nil (diff id)
@@ -214,7 +213,7 @@ job, err = enqueuer.EnqueueUniqueIn("clear_cache", 300, work.Q{"object_id_": "78
 
 Alternatively, you can provide your own key for making a job unique. When another job is enqueued with the same key as a job already in the queue, it will simply update the arguments.
 ```go
-enqueuer := work.NewEnqueuer("my_app_namespace", redisPool)
+enqueuer := work.NewEnqueuer("my_app_namespace", redisAdapter)
 job, err := enqueuer.EnqueueUniqueByKey("clear_cache", work.Q{"object_id_": "123"}, map[string]interface{}{"my_key": "586"})
 job, err = enqueuer.EnqueueUniqueInByKey("clear_cache", 300, work.Q{"object_id_": "789"}, map[string]interface{}{"my_key": "586"})
 ```
@@ -225,7 +224,7 @@ For information on how this map will be serialized to form a unique key, see (ht
 You can periodically enqueue jobs on your gocraft/work cluster using your worker pool. The [scheduling specification](https://godoc.org/github.com/robfig/cron#hdr-CRON_Expression_Format) uses a Cron syntax where the fields represent seconds, minutes, hours, day of the month, month, and week of the day, respectively. Even if you have multiple worker pools on different machines, they'll all coordinate and only enqueue your job once.
 
 ```go
-pool := work.NewWorkerPool(Context{}, 10, "my_app_namespace", redisPool)
+pool := work.NewWorkerPool(Context{}, 10, "my_app_namespace", redisAdapter)
 pool.PeriodicallyEnqueue("0 0 * * * *", "calculate_caches") // This will enqueue a "calculate_caches" job every hour
 pool.Job("calculate_caches", (*Context).CalculateCaches) // Still need to register a handler for this job separately
 ```

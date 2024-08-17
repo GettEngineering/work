@@ -1,37 +1,33 @@
 package work
 
 import (
+	"context"
 	"sync"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
+	"github.com/GettEngineering/work/redis"
 )
 
 // Enqueuer can enqueue jobs.
 type Enqueuer struct {
-	Namespace string // eg, "myapp-work"
-	Pool      *redis.Pool
-
+	namespace             string // eg, "myapp-work"
+	redisAdapter          redis.Redis
 	queuePrefix           string // eg, "myapp-work:jobs:"
 	knownJobs             map[string]int64
-	enqueueUniqueScript   *redis.Script
-	enqueueUniqueInScript *redis.Script
+	enqueueUniqueScript   redis.Script
+	enqueueUniqueInScript redis.Script
 	mtx                   sync.RWMutex
 }
 
 // NewEnqueuer creates a new enqueuer with the specified Redis namespace and Redis pool.
-func NewEnqueuer(namespace string, pool *redis.Pool) *Enqueuer {
-	if pool == nil {
-		panic("NewEnqueuer needs a non-nil *redis.Pool")
-	}
-
+func NewEnqueuer(namespace string, redisAdapter redis.Redis) *Enqueuer {
 	return &Enqueuer{
-		Namespace:             namespace,
-		Pool:                  pool,
+		namespace:             namespace,
+		redisAdapter:          redisAdapter,
 		queuePrefix:           redisKeyJobsPrefix(namespace),
 		knownJobs:             make(map[string]int64),
-		enqueueUniqueScript:   redis.NewScript(2, redisLuaEnqueueUnique),
-		enqueueUniqueInScript: redis.NewScript(2, redisLuaEnqueueUniqueIn),
+		enqueueUniqueScript:   redisAdapter.NewScript(redisLuaEnqueueUnique, 2),
+		enqueueUniqueInScript: redisAdapter.NewScript(redisLuaEnqueueUniqueIn, 2),
 	}
 }
 
@@ -50,14 +46,13 @@ func (e *Enqueuer) Enqueue(jobName string, args map[string]interface{}) (*Job, e
 		return nil, err
 	}
 
-	conn := e.Pool.Get()
-	defer conn.Close()
+	ctx := context.TODO()
 
-	if _, err := conn.Do("LPUSH", e.queuePrefix+jobName, rawJSON); err != nil {
+	if err := e.redisAdapter.LPush(ctx, e.queuePrefix+jobName, rawJSON); err != nil {
 		return nil, err
 	}
 
-	if err := e.addToKnownJobs(conn, jobName); err != nil {
+	if err := e.addToKnownJobs(ctx, jobName); err != nil {
 		return job, err
 	}
 
@@ -78,20 +73,19 @@ func (e *Enqueuer) EnqueueIn(jobName string, secondsFromNow int64, args map[stri
 		return nil, err
 	}
 
-	conn := e.Pool.Get()
-	defer conn.Close()
-
 	scheduledJob := &ScheduledJob{
 		RunAt: nowEpochSeconds() + secondsFromNow,
 		Job:   job,
 	}
 
-	_, err = conn.Do("ZADD", redisKeyScheduled(e.Namespace), scheduledJob.RunAt, rawJSON)
+	ctx := context.TODO()
+
+	err = e.redisAdapter.ZAdd(ctx, redisKeyScheduled(e.namespace), float64(scheduledJob.RunAt), rawJSON)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := e.addToKnownJobs(conn, jobName); err != nil {
+	if err := e.addToKnownJobs(ctx, jobName); err != nil {
 		return scheduledJob, err
 	}
 
@@ -125,7 +119,7 @@ func (e *Enqueuer) EnqueueUniqueByKey(jobName string, args map[string]interface{
 		return nil, err
 	}
 
-	res, err := enqueue(nil)
+	res, err := enqueue(context.TODO(), nil)
 
 	if res == "ok" && err == nil {
 		return job, nil
@@ -146,14 +140,14 @@ func (e *Enqueuer) EnqueueUniqueInByKey(jobName string, secondsFromNow int64, ar
 		Job:   job,
 	}
 
-	res, err := enqueue(&scheduledJob.RunAt)
+	res, err := enqueue(context.TODO(), &scheduledJob.RunAt)
 	if res == "ok" && err == nil {
 		return scheduledJob, nil
 	}
 	return nil, err
 }
 
-func (e *Enqueuer) addToKnownJobs(conn redis.Conn, jobName string) error {
+func (e *Enqueuer) addToKnownJobs(ctx context.Context, jobName string) error {
 	needSadd := true
 	now := time.Now().Unix()
 
@@ -167,7 +161,7 @@ func (e *Enqueuer) addToKnownJobs(conn redis.Conn, jobName string) error {
 		}
 	}
 	if needSadd {
-		if _, err := conn.Do("SADD", redisKeyKnownJobs(e.Namespace), jobName); err != nil {
+		if err := e.redisAdapter.SAdd(ctx, redisKeyKnownJobs(e.namespace), jobName); err != nil {
 			return err
 		}
 
@@ -179,16 +173,20 @@ func (e *Enqueuer) addToKnownJobs(conn redis.Conn, jobName string) error {
 	return nil
 }
 
-type enqueueFnType func(*int64) (string, error)
+type enqueueFnType func(context.Context, *int64) (string, error)
 
-func (e *Enqueuer) uniqueJobHelper(jobName string, args map[string]interface{}, keyMap map[string]interface{}) (enqueueFnType, *Job, error) {
+func (e *Enqueuer) uniqueJobHelper(
+	jobName string,
+	args map[string]interface{},
+	keyMap map[string]interface{},
+) (enqueueFnType, *Job, error) {
 	useDefaultKeys := false
 	if keyMap == nil {
 		useDefaultKeys = true
 		keyMap = args
 	}
 
-	uniqueKey, err := redisKeyUniqueJob(e.Namespace, jobName, keyMap)
+	uniqueKey, err := redisKeyUniqueJob(e.namespace, jobName, keyMap)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -207,20 +205,15 @@ func (e *Enqueuer) uniqueJobHelper(jobName string, args map[string]interface{}, 
 		return nil, nil, err
 	}
 
-	enqueueFn := func(runAt *int64) (string, error) {
-		conn := e.Pool.Get()
-		defer conn.Close()
-
-		if err := e.addToKnownJobs(conn, jobName); err != nil {
+	enqueueFn := func(ctx context.Context, runAt *int64) (string, error) {
+		if err := e.addToKnownJobs(ctx, jobName); err != nil {
 			return "", err
 		}
 
-		scriptArgs := []interface{}{}
 		script := e.enqueueUniqueScript
+		scriptKeys := []string{e.queuePrefix + jobName, uniqueKey} // KEYS[1], KEYS[2]
+		scriptArgs := []any{rawJSON}                               // ARGV[1]
 
-		scriptArgs = append(scriptArgs, e.queuePrefix+jobName) // KEY[1]
-		scriptArgs = append(scriptArgs, uniqueKey)             // KEY[2]
-		scriptArgs = append(scriptArgs, rawJSON)               // ARGV[1]
 		if useDefaultKeys {
 			// keying on arguments so arguments can't be updated
 			// we'll just get them off the original job so to save space, make this "1"
@@ -231,14 +224,16 @@ func (e *Enqueuer) uniqueJobHelper(jobName string, args map[string]interface{}, 
 			scriptArgs = append(scriptArgs, rawJSON) // ARGV[2]
 		}
 
-		if runAt != nil { // Scheduled job so different job queue with additional arg
-			scriptArgs[0] = redisKeyScheduled(e.Namespace) // KEY[1]
-			scriptArgs = append(scriptArgs, *runAt)        // ARGV[3]
-
+		// Scheduled job, so use different job queue with additional arg.
+		if runAt != nil {
 			script = e.enqueueUniqueInScript
+			scriptKeys[0] = redisKeyScheduled(e.namespace) // KEY[1]
+			scriptArgs = append(scriptArgs, *runAt)        // ARGV[3]
 		}
 
-		return redis.String(script.Do(conn, scriptArgs...))
+		reply := script.Run(ctx, scriptKeys, scriptArgs...)
+
+		return reply.Text()
 	}
 
 	return enqueueFn, job, nil

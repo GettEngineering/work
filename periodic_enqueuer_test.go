@@ -1,18 +1,19 @@
 package work
 
 import (
+	"context"
 	"testing"
 	"time"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/robfig/cron/v3"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestPeriodicEnqueuer(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
 	var pjs []*periodicJob
 	pjs = appendPeriodicJob(pjs, "0/29 * * * * *", "foo") // Every 29 seconds
@@ -22,11 +23,11 @@ func TestPeriodicEnqueuer(t *testing.T) {
 	setNowEpochSecondsMock(1468359453)
 	defer resetNowEpochSecondsMock()
 
-	pe := newPeriodicEnqueuer(ns, pool, pjs)
-	err := pe.enqueue()
+	pe := newPeriodicEnqueuer(ns, redisAdapter, pjs)
+	err := pe.enqueue(ctx)
 	assert.NoError(t, err)
 
-	c := NewClient(ns, pool)
+	c := NewClient(ns, redisAdapter)
 	scheduledJobs, count, err := c.ScheduledJobs(1)
 	assert.NoError(t, err)
 	assert.EqualValues(t, 20, count)
@@ -67,18 +68,15 @@ func TestPeriodicEnqueuer(t *testing.T) {
 		assert.Equal(t, e.scheduledFor, scheduledJobs[i].RunAt)
 	}
 
-	conn := pool.Get()
-	defer conn.Close()
-
 	// Make sure the last periodic enqueued was set
-	lastEnqueue, err := redis.Int64(conn.Do("GET", redisKeyLastPeriodicEnqueue(ns)))
+	lastEnqueue, err := redisAdapter.Get(ctx, redisKeyLastPeriodicEnqueue(ns)).Int64()
 	assert.NoError(t, err)
 	assert.EqualValues(t, 1468359453, lastEnqueue)
 
 	setNowEpochSecondsMock(1468359454)
 
 	// Now do it again, and make sure nothing happens!
-	err = pe.enqueue()
+	err = pe.enqueue(ctx)
 	assert.NoError(t, err)
 
 	_, count, err = c.ScheduledJobs(1)
@@ -86,23 +84,24 @@ func TestPeriodicEnqueuer(t *testing.T) {
 	assert.EqualValues(t, 20, count)
 
 	// Make sure the last periodic enqueued was set
-	lastEnqueue, err = redis.Int64(conn.Do("GET", redisKeyLastPeriodicEnqueue(ns)))
+	lastEnqueue, err = redisAdapter.Get(ctx, redisKeyLastPeriodicEnqueue(ns)).Int64()
 	assert.NoError(t, err)
 	assert.EqualValues(t, 1468359454, lastEnqueue)
 
-	assert.False(t, pe.shouldEnqueue())
+	assert.False(t, pe.shouldEnqueue(ctx))
 
 	setNowEpochSecondsMock(1468359454 + int64(periodicEnqueuerSleep/time.Minute) + 10)
 
-	assert.True(t, pe.shouldEnqueue())
+	assert.True(t, pe.shouldEnqueue(ctx))
 }
 
 func TestPeriodicEnqueuerSpawn(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, ns, redisAdapter)
 
-	pe := newPeriodicEnqueuer(ns, pool, nil)
+	pe := newPeriodicEnqueuer(ns, redisAdapter, nil)
 	pe.start()
 	pe.stop()
 }

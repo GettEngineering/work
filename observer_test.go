@@ -1,29 +1,32 @@
 package work
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
-	"github.com/gomodule/redigo/redis"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/GettEngineering/work/redis"
 )
 
 func TestObserverStarted(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 
 	tMock := int64(1425263401)
 	setNowEpochSecondsMock(tMock)
 	defer resetNowEpochSecondsMock()
 
-	observer := newObserver(ns, pool, "abcd")
+	observer := newObserver(ns, redisAdapter, "abcd")
 	observer.start()
 	observer.observeStarted("foo", "bar", Q{"a": 1, "b": "wat"})
 	//observer.observeDone("foo", "bar", nil)
 	observer.drain()
 	observer.stop()
 
-	h := readHash(pool, redisKeyWorkerObservation(ns, "abcd"))
+	h := readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, "abcd"))
 	assert.Equal(t, "foo", h["job_name"])
 	assert.Equal(t, "bar", h["job_id"])
 	assert.Equal(t, fmt.Sprint(tMock), h["started_at"])
@@ -31,29 +34,31 @@ func TestObserverStarted(t *testing.T) {
 }
 
 func TestObserverStartedDone(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 
 	tMock := int64(1425263401)
 	setNowEpochSecondsMock(tMock)
 	defer resetNowEpochSecondsMock()
 
-	observer := newObserver(ns, pool, "abcd")
+	observer := newObserver(ns, redisAdapter, "abcd")
 	observer.start()
 	observer.observeStarted("foo", "bar", Q{"a": 1, "b": "wat"})
 	observer.observeDone("foo", "bar", nil)
 	observer.drain()
 	observer.stop()
 
-	h := readHash(pool, redisKeyWorkerObservation(ns, "abcd"))
+	h := readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, "abcd"))
 	assert.Equal(t, 0, len(h))
 }
 
 func TestObserverCheckin(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 
-	observer := newObserver(ns, pool, "abcd")
+	observer := newObserver(ns, redisAdapter, "abcd")
 	observer.start()
 
 	tMock := int64(1425263401)
@@ -67,7 +72,7 @@ func TestObserverCheckin(t *testing.T) {
 	observer.drain()
 	observer.stop()
 
-	h := readHash(pool, redisKeyWorkerObservation(ns, "abcd"))
+	h := readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, "abcd"))
 	assert.Equal(t, "foo", h["job_name"])
 	assert.Equal(t, "bar", h["job_id"])
 	assert.Equal(t, fmt.Sprint(tMock), h["started_at"])
@@ -77,10 +82,11 @@ func TestObserverCheckin(t *testing.T) {
 }
 
 func TestObserverCheckinFromJob(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 
-	observer := newObserver(ns, pool, "abcd")
+	observer := newObserver(ns, redisAdapter, "abcd")
 	observer.start()
 
 	tMock := int64(1425263401)
@@ -97,7 +103,7 @@ func TestObserverCheckinFromJob(t *testing.T) {
 	observer.drain()
 	observer.stop()
 
-	h := readHash(pool, redisKeyWorkerObservation(ns, "abcd"))
+	h := readHash(ctx, redisAdapter, redisKeyWorkerObservation(ns, "abcd"))
 	assert.Equal(t, "foo", h["job_name"])
 	assert.Equal(t, "barbar", h["job_id"])
 	assert.Equal(t, fmt.Sprint(tMock), h["started_at"])
@@ -105,20 +111,11 @@ func TestObserverCheckinFromJob(t *testing.T) {
 	assert.Equal(t, fmt.Sprint(tMockCheckin), h["checkin_at"])
 }
 
-func readHash(pool *redis.Pool, key string) map[string]string {
-	m := make(map[string]string)
-
-	conn := pool.Get()
-	defer conn.Close()
-
-	v, err := redis.Strings(conn.Do("HGETALL", key))
+func readHash(ctx context.Context, redisAdapter redis.Redis, key string) map[string]string {
+	v, err := redisAdapter.HGetAll(ctx, key).Result()
 	if err != nil {
 		panic("could not delete retry/dead queue: " + err.Error())
 	}
 
-	for i, l := 0, len(v); i < l; i += 2 {
-		m[v[i]] = v[i+1]
-	}
-
-	return m
+	return v
 }

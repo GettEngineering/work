@@ -1,25 +1,33 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/GettEngineering/work"
+	goredisv8 "github.com/go-redis/redis/v8"
 	"github.com/gomodule/redigo/redis"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/GettEngineering/work"
+	workredis "github.com/GettEngineering/work/redis"
+	goredisv8adapter "github.com/GettEngineering/work/redis/adapters/goredisv8"
+	redigoadapter "github.com/GettEngineering/work/redis/adapters/redigo"
 )
 
 func TestWebUIStartStop(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, redisAdapter, ns)
 
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 	s.Start()
 	s.Stop()
 }
@@ -27,12 +35,13 @@ func TestWebUIStartStop(t *testing.T) {
 type TestContext struct{}
 
 func TestWebUIQueues(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, redisAdapter, ns)
 
 	// Get some stuff to to show up in the jobs:
-	enqueuer := work.NewEnqueuer(ns, pool)
+	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
 	assert.NoError(t, err)
 	enqueuer.Enqueue("foo", nil)
@@ -40,7 +49,7 @@ func TestWebUIQueues(t *testing.T) {
 
 	// Start a pool to work on it. It's going to work on the queues
 	// side effect of that is knowing which jobs are avail
-	wp := work.NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := work.NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(job *work.Job) error {
 		return nil
 	})
@@ -62,7 +71,7 @@ func TestWebUIQueues(t *testing.T) {
 	enqueuer.Enqueue("foo", nil)
 	enqueuer.Enqueue("zaz", nil)
 
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest("GET", "/queues", nil)
@@ -83,17 +92,18 @@ func TestWebUIQueues(t *testing.T) {
 }
 
 func TestWebUIWorkerPools(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, redisAdapter, ns)
 
-	wp := work.NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := work.NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(job *work.Job) error { return nil })
 	wp.Job("bob", func(job *work.Job) error { return nil })
 	wp.Start()
 	defer wp.Stop()
 
-	wp2 := work.NewWorkerPool(TestContext{}, 11, ns, pool)
+	wp2 := work.NewWorkerPool(TestContext{}, 11, ns, redisAdapter)
 	wp2.Job("foo", func(job *work.Job) error { return nil })
 	wp2.Job("bar", func(job *work.Job) error { return nil })
 	wp2.Start()
@@ -101,7 +111,7 @@ func TestWebUIWorkerPools(t *testing.T) {
 
 	time.Sleep(20 * time.Millisecond)
 
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest("GET", "/worker_pools", nil)
@@ -121,16 +131,17 @@ func TestWebUIWorkerPools(t *testing.T) {
 }
 
 func TestWebUIBusyWorkers(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, redisAdapter, ns)
 
 	// Keep a job in the in-progress state without using sleeps
 	wgroup := sync.WaitGroup{}
 	wgroup2 := sync.WaitGroup{}
 	wgroup2.Add(1)
 
-	wp := work.NewWorkerPool(TestContext{}, 10, ns, pool)
+	wp := work.NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
 	wp.Job("wat", func(job *work.Job) error {
 		wgroup2.Done()
 		wgroup.Wait()
@@ -139,13 +150,13 @@ func TestWebUIBusyWorkers(t *testing.T) {
 	wp.Start()
 	defer wp.Stop()
 
-	wp2 := work.NewWorkerPool(TestContext{}, 11, ns, pool)
+	wp2 := work.NewWorkerPool(TestContext{}, 11, ns, redisAdapter)
 	wp2.Start()
 	defer wp2.Stop()
 
 	time.Sleep(10 * time.Millisecond)
 
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest("GET", "/busy_workers", nil)
@@ -160,7 +171,7 @@ func TestWebUIBusyWorkers(t *testing.T) {
 	wgroup.Add(1)
 
 	// Ok, now let's make a busy worker
-	enqueuer := work.NewEnqueuer(ns, pool)
+	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	enqueuer.Enqueue("wat", nil)
 	wgroup2.Wait()
 	time.Sleep(5 * time.Millisecond) // need to let obsever process
@@ -183,15 +194,16 @@ func TestWebUIBusyWorkers(t *testing.T) {
 }
 
 func TestWebUIRetryJobs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "work"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, redisAdapter, ns)
 
-	enqueuer := work.NewEnqueuer(ns, pool)
+	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
 	assert.Nil(t, err)
 
-	wp := work.NewWorkerPool(TestContext{}, 2, ns, pool)
+	wp := work.NewWorkerPool(TestContext{}, 2, ns, redisAdapter)
 	wp.Job("wat", func(job *work.Job) error {
 		return fmt.Errorf("ohno")
 	})
@@ -199,7 +211,7 @@ func TestWebUIRetryJobs(t *testing.T) {
 	wp.Drain()
 	wp.Stop()
 
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest("GET", "/retry_jobs", nil)
@@ -226,15 +238,16 @@ func TestWebUIRetryJobs(t *testing.T) {
 }
 
 func TestWebUIScheduledJobs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, redisAdapter, ns)
 
-	enqueuer := work.NewEnqueuer(ns, pool)
+	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.EnqueueIn("watter", 1, nil)
 	assert.Nil(t, err)
 
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest("GET", "/scheduled_jobs", nil)
@@ -259,16 +272,17 @@ func TestWebUIScheduledJobs(t *testing.T) {
 }
 
 func TestWebUIDeadJobs(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, redisAdapter, ns)
 
-	enqueuer := work.NewEnqueuer(ns, pool)
+	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
 	_, err = enqueuer.Enqueue("wat", nil)
 	assert.Nil(t, err)
 
-	wp := work.NewWorkerPool(TestContext{}, 2, ns, pool)
+	wp := work.NewWorkerPool(TestContext{}, 2, ns, redisAdapter)
 	wp.JobWithOptions("wat", work.JobOptions{Priority: 1, MaxFails: 1}, func(job *work.Job) error {
 		return fmt.Errorf("ohno")
 	})
@@ -276,7 +290,7 @@ func TestWebUIDeadJobs(t *testing.T) {
 	wp.Drain()
 	wp.Stop()
 
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest("GET", "/dead_jobs", nil)
@@ -347,16 +361,17 @@ func TestWebUIDeadJobs(t *testing.T) {
 }
 
 func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
-	pool := newTestPool(":6379")
+	ctx := context.Background()
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	cleanKeyspace(ns, pool)
+	cleanKeyspace(ctx, redisAdapter, ns)
 
-	enqueuer := work.NewEnqueuer(ns, pool)
+	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
 	_, err = enqueuer.Enqueue("wat", nil)
 	assert.Nil(t, err)
 
-	wp := work.NewWorkerPool(TestContext{}, 2, ns, pool)
+	wp := work.NewWorkerPool(TestContext{}, 2, ns, redisAdapter)
 	wp.JobWithOptions("wat", work.JobOptions{Priority: 1, MaxFails: 1}, func(job *work.Job) error {
 		return fmt.Errorf("ohno")
 	})
@@ -364,7 +379,7 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 	wp.Drain()
 	wp.Stop()
 
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest("GET", "/dead_jobs", nil)
@@ -448,9 +463,9 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 }
 
 func TestWebUIAssets(t *testing.T) {
-	pool := newTestPool(":6379")
+	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
-	s := NewServer(ns, pool, ":6666")
+	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
 	request, _ := http.NewRequest("GET", "/", nil)
@@ -463,28 +478,38 @@ func TestWebUIAssets(t *testing.T) {
 	s.router.ServeHTTP(recorder, request)
 }
 
-func newTestPool(addr string) *redis.Pool {
-	return &redis.Pool{
-		MaxActive:   3,
-		MaxIdle:     3,
-		IdleTimeout: 240 * time.Second,
-		Dial: func() (redis.Conn, error) {
-			return redis.Dial("tcp", addr)
-		},
-		Wait: true,
+func newTestRedis(addr string) workredis.Redis {
+	switch os.Getenv("TEST_REDIS_ADAPTER") {
+	case "goredisv8":
+		rdb := goredisv8.NewClient(&goredisv8.Options{
+			Addr:     "localhost:6379",
+			Password: "",
+			DB:       0,
+		})
+		return goredisv8adapter.NewGoredisAdapter(rdb)
+	case "redigo":
+		fallthrough
+	default:
+		pool := &redis.Pool{
+			MaxActive:   3,
+			MaxIdle:     3,
+			IdleTimeout: 240 * time.Second,
+			Dial: func() (redis.Conn, error) {
+				return redis.Dial("tcp", addr)
+			},
+			Wait: true,
+		}
+		return redigoadapter.NewRedigoAdapter(pool)
 	}
 }
 
-func cleanKeyspace(namespace string, pool *redis.Pool) {
-	conn := pool.Get()
-	defer conn.Close()
-
-	keys, err := redis.Strings(conn.Do("KEYS", namespace+"*"))
+func cleanKeyspace(ctx context.Context, redisAdapter workredis.Redis, namespace string) {
+	keys, err := redisAdapter.Keys(ctx, namespace+"*")
 	if err != nil {
 		panic("could not get keys: " + err.Error())
 	}
 	for _, k := range keys {
-		if _, err := conn.Do("DEL", k); err != nil {
+		if err := redisAdapter.Del(ctx, k); err != nil {
 			panic("could not del: " + err.Error())
 		}
 	}
