@@ -17,12 +17,12 @@ func TestObserverStarted(t *testing.T) {
 
 	tMock := int64(1425263401)
 	setNowEpochSecondsMock(tMock)
+
 	defer resetNowEpochSecondsMock()
 
 	observer := newObserver(ns, redisAdapter, "abcd")
 	observer.start()
 	observer.observeStarted("foo", "bar", Q{"a": 1, "b": "wat"})
-	//observer.observeDone("foo", "bar", nil)
 	observer.drain()
 	observer.stop()
 
@@ -63,6 +63,7 @@ func TestObserverCheckin(t *testing.T) {
 
 	tMock := int64(1425263401)
 	setNowEpochSecondsMock(tMock)
+
 	defer resetNowEpochSecondsMock()
 	observer.observeStarted("foo", "bar", Q{"a": 1, "b": "wat"})
 

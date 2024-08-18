@@ -15,18 +15,20 @@ func TestPrioritySampler(t *testing.T) {
 	ps.add(2, "jobs.2a", "jobsinprog.2a", "jobspaused.2a", "jobslock.2a", "jobslockinfo.2a", "jobsconcurrency.2a")
 	ps.add(1, "jobs.1b", "jobsinprog.1b", "jobspaused.1b", "jobslock.1b", "jobslockinfo.1b", "jobsconcurrency.1b")
 
-	var c5 = 0
-	var c2 = 0
-	var c1 = 0
-	var c1end = 0
-	var total = 200
+	c5 := 0
+	c2 := 0
+	c1 := 0
+	c1end := 0
+	total := 200
+
 	for i := 0; i < total; i++ {
 		ret := ps.sample()
-		if ret[0].priority == 5 {
+		switch ret[0].priority {
+		case 5:
 			c5++
-		} else if ret[0].priority == 2 {
+		case 2:
 			c2++
-		} else if ret[0].priority == 1 {
+		case 1:
 			c1++
 		}
 		if ret[2].priority == 1 {
@@ -56,6 +58,7 @@ func BenchmarkPrioritySampler(b *testing.B) {
 	}
 
 	b.ResetTimer()
+
 	for i := 0; i < b.N; i++ {
 		ps.sample()
 	}

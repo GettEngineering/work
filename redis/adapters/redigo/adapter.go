@@ -11,25 +11,25 @@ import (
 	workredis "github.com/GettEngineering/work/redis"
 )
 
-var _ workredis.Redis = (*RedigoAdapter)(nil)
+var _ workredis.Redis = (*Adapter)(nil)
 
 type redisReplyBase interface {
 	set(val any, err error)
 }
 
-type RedigoAdapter struct {
+type Adapter struct {
 	pool      *redis.Pool
 	multiConn redis.Conn
 	stack     []redisReplyBase
 }
 
-func NewRedigoAdapter(pool *redis.Pool) *RedigoAdapter {
-	return &RedigoAdapter{
+func NewAdapter(pool *redis.Pool) *Adapter {
+	return &Adapter{
 		pool: pool,
 	}
 }
 
-func (r *RedigoAdapter) NewScript(src string, keyCount int) workredis.Script {
+func (r *Adapter) NewScript(src string, keyCount int) workredis.Script {
 	s := redis.NewScript(keyCount, src)
 
 	return &redigoScript{
@@ -38,7 +38,7 @@ func (r *RedigoAdapter) NewScript(src string, keyCount int) workredis.Script {
 	}
 }
 
-func (r *RedigoAdapter) Get(_ context.Context, key string) workredis.Reply {
+func (r *Adapter) Get(_ context.Context, key string) workredis.Reply {
 	reply := redigoReply{}
 
 	if r.multiConn == nil {
@@ -53,11 +53,11 @@ func (r *RedigoAdapter) Get(_ context.Context, key string) workredis.Reply {
 	return &reply
 }
 
-func (r *RedigoAdapter) Decr(_ context.Context, key string) error {
+func (r *Adapter) Decr(_ context.Context, key string) error {
 	return r.do("DECR", key)
 }
 
-func (r *RedigoAdapter) Del(_ context.Context, keys ...string) error {
+func (r *Adapter) Del(_ context.Context, keys ...string) error {
 	args := make([]any, 0, len(keys))
 	for _, key := range keys {
 		args = append(args, key)
@@ -65,21 +65,21 @@ func (r *RedigoAdapter) Del(_ context.Context, keys ...string) error {
 	return r.do("DEL", args...)
 }
 
-func (r *RedigoAdapter) Exists(_ context.Context, key string) (bool, error) {
+func (r *Adapter) Exists(_ context.Context, key string) (bool, error) {
 	reply, err := r.doInt64("EXISTS", key)
 
 	return reply == 1, err
 }
 
-func (r *RedigoAdapter) Expire(_ context.Context, key string, expiration time.Duration) error {
+func (r *Adapter) Expire(_ context.Context, key string, expiration time.Duration) error {
 	return r.do("EXPIRE", key, int(expiration.Seconds()))
 }
 
-func (r *RedigoAdapter) HIncrBy(_ context.Context, key, field string, incr int64) error {
+func (r *Adapter) HIncrBy(_ context.Context, key, field string, incr int64) error {
 	return r.do("HINCRBY", key, field, incr)
 }
 
-func (r *RedigoAdapter) HGet(_ context.Context, key, field string) workredis.Reply {
+func (r *Adapter) HGet(_ context.Context, key, field string) workredis.Reply {
 	reply := redigoReply{}
 
 	if r.multiConn == nil {
@@ -95,14 +95,14 @@ func (r *RedigoAdapter) HGet(_ context.Context, key, field string) workredis.Rep
 }
 
 // Supports pipelining.
-func (r *RedigoAdapter) HGetAll(_ context.Context, key string) workredis.StringStringMapReply {
+func (r *Adapter) HGetAll(_ context.Context, key string) workredis.StringStringMapReply {
 	reply := redigoStringStringMapReply{}
 	r.doWithReply(&reply, "HGETALL", key)
 
 	return &reply
 }
 
-func (r *RedigoAdapter) HSet(_ context.Context, key string, fieldvals ...any) error {
+func (r *Adapter) HSet(_ context.Context, key string, fieldvals ...any) error {
 	args := make([]any, 0, len(fieldvals)+1)
 	args = append(args, key)
 	args = append(args, fieldvals...)
@@ -110,16 +110,16 @@ func (r *RedigoAdapter) HSet(_ context.Context, key string, fieldvals ...any) er
 	return r.do("HSET", args...)
 }
 
-func (r *RedigoAdapter) Incr(_ context.Context, key string) error {
+func (r *Adapter) Incr(_ context.Context, key string) error {
 	return r.do("INCR", key)
 }
 
-func (r *RedigoAdapter) Keys(_ context.Context, pattern string) ([]string, error) {
+func (r *Adapter) Keys(_ context.Context, pattern string) ([]string, error) {
 	return r.doStrings("KEYS", pattern)
 }
 
 // Supports pipelining.
-func (r *RedigoAdapter) LIndex(_ context.Context, key string, index int64) workredis.Reply {
+func (r *Adapter) LIndex(_ context.Context, key string, index int64) workredis.Reply {
 	reply := redigoReply{}
 	r.doWithReply(&reply, "LINDEX", key, index)
 
@@ -127,48 +127,48 @@ func (r *RedigoAdapter) LIndex(_ context.Context, key string, index int64) workr
 }
 
 // Supports pipelining.
-func (r *RedigoAdapter) LLen(_ context.Context, key string) workredis.IntReply {
+func (r *Adapter) LLen(_ context.Context, key string) workredis.IntReply {
 	reply := redigoIntReply{}
 	r.doWithReply(&reply, "LLEN", key)
 
 	return &reply
 }
 
-func (r *RedigoAdapter) LPush(_ context.Context, key string, value any) error {
+func (r *Adapter) LPush(_ context.Context, key string, value any) error {
 	_, err := r.doInt64("LPUSH", key, value)
 	return err
 }
 
-func (r *RedigoAdapter) LRem(_ context.Context, key string, value any) error {
+func (r *Adapter) LRem(_ context.Context, key string, value any) error {
 	return r.do("LREM", key, 1, value)
 }
 
-func (r *RedigoAdapter) RPop(_ context.Context, key string) workredis.Reply {
+func (r *Adapter) RPop(_ context.Context, key string) workredis.Reply {
 	reply := redigoReply{}
 	r.doWithReply(&reply, "RPOP", key)
 
 	return &reply
 }
 
-func (r *RedigoAdapter) RPush(_ context.Context, key string, value any) error {
+func (r *Adapter) RPush(_ context.Context, key string, value any) error {
 	_, err := r.doInt64("RPUSH", key, value)
 	return err
 }
 
-func (r *RedigoAdapter) SAdd(_ context.Context, key string, members ...any) error {
+func (r *Adapter) SAdd(_ context.Context, key string, members ...any) error {
 	_, err := r.doInt64("SADD", append([]any{key}, members...)...)
 	return err
 }
 
-func (r *RedigoAdapter) SCard(_ context.Context, key string) (int64, error) {
+func (r *Adapter) SCard(_ context.Context, key string) (int64, error) {
 	return r.doInt64("SCARD", key)
 }
 
-func (r *RedigoAdapter) Set(_ context.Context, key string, value any) error {
+func (r *Adapter) Set(_ context.Context, key string, value any) error {
 	return r.do("SET", key, value)
 }
 
-func (r *RedigoAdapter) SIsMember(_ context.Context, key string, member any) (bool, error) {
+func (r *Adapter) SIsMember(_ context.Context, key string, member any) (bool, error) {
 	if r.multiConn == nil {
 		conn := r.pool.Get()
 		defer conn.Close()
@@ -180,28 +180,28 @@ func (r *RedigoAdapter) SIsMember(_ context.Context, key string, member any) (bo
 	return false, err
 }
 
-func (r *RedigoAdapter) SMembers(_ context.Context, key string) ([]string, error) {
+func (r *Adapter) SMembers(_ context.Context, key string) ([]string, error) {
 	return r.doStrings("SMEMBERS", key)
 }
 
-func (r *RedigoAdapter) SRem(_ context.Context, key string, member any) error {
+func (r *Adapter) SRem(_ context.Context, key string, member any) error {
 	return r.do("SREM", key, member)
 }
 
-func (r *RedigoAdapter) ZAdd(_ context.Context, key string, score float64, member any) error {
+func (r *Adapter) ZAdd(_ context.Context, key string, score float64, member any) error {
 	_, err := r.doInt64("ZADD", key, score, member)
 	return err
 }
 
-func (r *RedigoAdapter) ZCard(_ context.Context, key string) (int64, error) {
+func (r *Adapter) ZCard(_ context.Context, key string) (int64, error) {
 	return r.doInt64("ZCARD", key)
 }
 
 // Doesn't support pipelining, returns an error.
-func (r *RedigoAdapter) ZRangeByScoreWithScores(
+func (r *Adapter) ZRangeByScoreWithScores(
 	_ context.Context,
 	key string,
-	min, max string,
+	minScore, maxScore string,
 	offset, count int64,
 ) (workredis.ZRanger, error) {
 	if r.multiConn != nil {
@@ -211,7 +211,7 @@ func (r *RedigoAdapter) ZRangeByScoreWithScores(
 	conn := r.pool.Get()
 	defer conn.Close()
 
-	reply, err := redis.Values(conn.Do("ZRANGEBYSCORE", key, min, max, "WITHSCORES", "LIMIT", offset, count))
+	reply, err := redis.Values(conn.Do("ZRANGEBYSCORE", key, minScore, maxScore, "WITHSCORES", "LIMIT", offset, count))
 	if err != nil {
 		return nil, err
 	}
@@ -225,7 +225,7 @@ func (r *RedigoAdapter) ZRangeByScoreWithScores(
 	return newRedigoZrange(vals), nil
 }
 
-func (r *RedigoAdapter) ZRangeWithScores(
+func (r *Adapter) ZRangeWithScores(
 	_ context.Context,
 	key string,
 	start, stop int64,
@@ -251,7 +251,7 @@ func (r *RedigoAdapter) ZRangeWithScores(
 	return newRedigoZrange(vals), nil
 }
 
-func (r *RedigoAdapter) WithPipeline(_ context.Context, fn func(workredis.Redis) error) error {
+func (r *Adapter) WithPipeline(_ context.Context, fn func(workredis.Redis) error) error {
 	if r.multiConn != nil {
 		return workredis.ErrPipeInProgress
 	}
@@ -278,7 +278,7 @@ func (r *RedigoAdapter) WithPipeline(_ context.Context, fn func(workredis.Redis)
 	return nil
 }
 
-func (r *RedigoAdapter) WithMulti(_ context.Context, fn func(workredis.Redis) error) error {
+func (r *Adapter) WithMulti(_ context.Context, fn func(workredis.Redis) error) error {
 	if r.multiConn != nil {
 		return workredis.ErrPipeInProgress
 	}
@@ -292,7 +292,9 @@ func (r *RedigoAdapter) WithMulti(_ context.Context, fn func(workredis.Redis) er
 	}
 
 	if err := fn(&rcopy); err != nil {
-		rcopy.multiConn.Do("DISCARD")
+		if _, discardErr := rcopy.multiConn.Do("DISCARD"); discardErr != nil {
+			return errors.Join(err, discardErr)
+		}
 		return err
 	}
 
@@ -301,7 +303,7 @@ func (r *RedigoAdapter) WithMulti(_ context.Context, fn func(workredis.Redis) er
 	return err
 }
 
-func (r *RedigoAdapter) do(cmd string, args ...any) error {
+func (r *Adapter) do(cmd string, args ...any) error {
 	var err error
 
 	if r.multiConn == nil {
@@ -316,7 +318,7 @@ func (r *RedigoAdapter) do(cmd string, args ...any) error {
 	return err
 }
 
-func (r *RedigoAdapter) doInt64(cmd string, args ...any) (int64, error) {
+func (r *Adapter) doInt64(cmd string, args ...any) (int64, error) {
 	var (
 		reply int64
 		err   error
@@ -334,7 +336,7 @@ func (r *RedigoAdapter) doInt64(cmd string, args ...any) (int64, error) {
 	return reply, err
 }
 
-func (r *RedigoAdapter) doStrings(cmd string, args ...any) ([]string, error) {
+func (r *Adapter) doStrings(cmd string, args ...any) ([]string, error) {
 	var (
 		reply []string
 		err   error
@@ -352,7 +354,7 @@ func (r *RedigoAdapter) doStrings(cmd string, args ...any) ([]string, error) {
 	return reply, err
 }
 
-func (r *RedigoAdapter) doWithReply(reply redisReplyBase, cmd string, args ...any) {
+func (r *Adapter) doWithReply(reply redisReplyBase, cmd string, args ...any) {
 	if r.multiConn == nil {
 		conn := r.pool.Get()
 		defer conn.Close()
@@ -541,7 +543,7 @@ func (z *redigoZrange) Next() bool {
 	return true
 }
 
-func (z *redigoZrange) Val() (any, float64) {
+func (z *redigoZrange) Val() (member any, score float64) {
 	if z.i == -1 {
 		return nil, 0
 	}

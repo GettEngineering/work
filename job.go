@@ -30,14 +30,14 @@ type Job struct {
 }
 
 // Q is a shortcut to easily specify arguments for jobs when enqueueing them.
-// Example: e.Enqueue("send_email", work.Q{"addr": "test@example.com", "track": true})
+// Example: e.Enqueue("send_email", work.Q{"addr": "test@example.com", "track": true}).
 type Q map[string]interface{}
 
 func newJob(rawJSON, dequeuedFrom, inProgQueue []byte) (*Job, error) {
 	var job Job
 	err := json.Unmarshal(rawJSON, &job)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("unmarshal job: %w", err)
 	}
 	job.rawJSON = rawJSON
 	job.dequeuedFrom = dequeuedFrom
@@ -46,7 +46,12 @@ func newJob(rawJSON, dequeuedFrom, inProgQueue []byte) (*Job, error) {
 }
 
 func (j *Job) serialize() ([]byte, error) {
-	return json.Marshal(j)
+	data, err := json.Marshal(j)
+	if err == nil {
+		return data, nil
+	}
+
+	return nil, fmt.Errorf("marshal job %s: %w", j.Name, err)
 }
 
 // setArg sets a single named argument on the job.
@@ -63,7 +68,9 @@ func (j *Job) failed(err error) {
 	j.FailedAt = nowEpochSeconds()
 }
 
-// Checkin will update the status of the executing job to the specified messages. This message is visible within the web UI. This is useful for indicating some sort of progress on very long running jobs. For instance, on a job that has to process a million records over the course of an hour, the job could call Checkin with the current job number every 10k jobs.
+// Checkin will update the status of the executing job to the specified messages. This message is visible within the web UI.
+// This is useful for indicating some sort of progress on very long running jobs. For instance, on a job that has to process
+// a million records over the course of an hour, the job could call Checkin with the current job number every 10k jobs.
 func (j *Job) Checkin(msg string) {
 	if j.observer != nil {
 		j.observer.observeCheckin(j.Name, j.ID, msg)
@@ -94,14 +101,16 @@ func (j *Job) ArgInt64(key string) int64 {
 	v, ok := j.Args[key]
 	if ok {
 		rVal := reflect.ValueOf(v)
-		if isIntKind(rVal) {
+
+		switch {
+		case isIntKind(rVal):
 			return rVal.Int()
-		} else if isUintKind(rVal) {
+		case isUintKind(rVal):
 			vUint := rVal.Uint()
 			if vUint <= math.MaxInt64 {
 				return int64(vUint)
 			}
-		} else if isFloatKind(rVal) {
+		case isFloatKind(rVal):
 			vFloat64 := rVal.Float()
 			vInt64 := int64(vFloat64)
 			if vFloat64 == math.Trunc(vFloat64) && vInt64 <= 9007199254740892 && vInt64 >= -9007199254740892 {
@@ -122,11 +131,13 @@ func (j *Job) ArgFloat64(key string) float64 {
 	v, ok := j.Args[key]
 	if ok {
 		rVal := reflect.ValueOf(v)
-		if isIntKind(rVal) {
+
+		switch {
+		case isIntKind(rVal):
 			return float64(rVal.Int())
-		} else if isUintKind(rVal) {
+		case isUintKind(rVal):
 			return float64(rVal.Uint())
-		} else if isFloatKind(rVal) {
+		case isFloatKind(rVal):
 			return rVal.Float()
 		}
 		j.argError = typecastError("float64", key, v)

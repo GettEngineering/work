@@ -28,7 +28,7 @@ import (
 )
 
 // Make a redis adapter.
-var redisAdapter = goredisv8adapter.NewGoredisAdapter(
+var redisAdapter = goredisv8adapter.NewAdapter(
 	goredisv8.NewClient(&goredisv8.Options{
 		Addr: addr,
 	}),
@@ -66,7 +66,7 @@ import (
 )
 
 // Make a redis adapter.
-var redisAdapter = goredisv8adapter.NewGoredisAdapter(
+var redisAdapter = goredisv8adapter.NewAdapter(
 	goredisv8.NewClient(&goredisv8.Options{
 		Addr: addr,
 	}),

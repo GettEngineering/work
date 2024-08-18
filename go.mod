@@ -1,6 +1,6 @@
 module github.com/GettEngineering/work
 
-go 1.21
+go 1.22
 
 require (
 	github.com/albrow/jobs v0.4.2

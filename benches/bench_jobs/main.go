@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"sync/atomic"
 	"time"
@@ -17,17 +18,19 @@ import (
 	redigoadapter "github.com/GettEngineering/work/redis/adapters/redigo"
 )
 
-var namespace = "jobs"
-var redisAdapter = newRedis(":6379")
+var (
+	namespace    = "jobs"
+	redisAdapter = newRedis(":6379")
+)
 
-func epsilonHandler(i int) error {
+func epsilonHandler(_ int) error {
 	atomic.AddInt64(&totcount, 1)
 	return nil
 }
 
 func main() {
 	ctx := context.Background()
-	stream := health.NewStream().AddSink(&health.WriterSink{os.Stdout})
+	stream := health.NewStream().AddSink(&health.WriterSink{Writer: os.Stdout})
 	cleanKeyspace(ctx)
 
 	queueNames := []string{"myqueue", "myqueue2", "myqueue3", "myqueue4", "myqueue5"}
@@ -88,25 +91,21 @@ func monitor() {
 	c2 := int64(0)
 	prev := int64(0)
 
-DALOOP:
-	for {
-		select {
-		case <-t:
-			curT++
-			v := atomic.AddInt64(&totcount, 0)
-			fmt.Printf("after %d seconds, count is %d\n", curT, v)
-			if curT == 1 {
-				c1 = v
-			} else if curT == 3 {
-				c2 = v
-			}
-			if v == prev {
-				break DALOOP
-			}
-			prev = v
+	for range t {
+		curT++
+		v := atomic.AddInt64(&totcount, 0)
+		log.Printf("after %d seconds, count is %d\n", curT, v)
+		if curT == 1 {
+			c1 = v
+		} else if curT == 3 {
+			c2 = v
 		}
+		if v == prev {
+			break
+		}
+		prev = v
 	}
-	fmt.Println("Jobs/sec: ", float64(c2-c1)/2.0)
+	log.Println("Jobs/sec: ", float64(c2-c1)/2.0)
 	os.Exit(0)
 }
 
@@ -116,7 +115,6 @@ func cleanKeyspace(ctx context.Context) {
 		panic("could not get keys: " + err.Error())
 	}
 	for _, k := range keys {
-		//fmt.Println("deleting ", k)
 		if err := redisAdapter.Del(ctx, k); err != nil {
 			panic("could not del: " + err.Error())
 		}
@@ -133,21 +131,19 @@ func newRedis(addr string) workredis.Redis {
 			Dial: func() (redis.Conn, error) {
 				c, err := redis.Dial("tcp", addr)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("dial redis: %w", err)
 				}
 				return c, nil
 			},
 			Wait: true,
 		}
-		return redigoadapter.NewRedigoAdapter(pool)
-	case "goredisv8":
-		fallthrough
+		return redigoadapter.NewAdapter(pool)
 	default:
 		rdb := goredisv8.NewClient(&goredisv8.Options{
 			Addr:     addr,
 			Password: "",
 			DB:       0,
 		})
-		return goredisv8adapter.NewGoredisAdapter(rdb)
+		return goredisv8adapter.NewAdapter(rdb)
 	}
 }

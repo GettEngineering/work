@@ -37,7 +37,11 @@ func TestWorkerBasics(t *testing.T) {
 		JobOptions: JobOptions{Priority: 1},
 		IsGeneric:  true,
 		GenericHandler: func(job *Job) error {
-			arg1 = job.Args["a"].(float64)
+			var ok bool
+
+			arg1, ok = job.Args["a"].(float64)
+			assert.True(t, ok)
+
 			return nil
 		},
 	}
@@ -46,7 +50,11 @@ func TestWorkerBasics(t *testing.T) {
 		JobOptions: JobOptions{Priority: 1},
 		IsGeneric:  true,
 		GenericHandler: func(job *Job) error {
-			arg2 = job.Args["a"].(float64)
+			var ok bool
+
+			arg2, ok = job.Args["a"].(float64)
+			assert.True(t, ok)
+
 			return nil
 		},
 	}
@@ -55,7 +63,11 @@ func TestWorkerBasics(t *testing.T) {
 		JobOptions: JobOptions{Priority: 1},
 		IsGeneric:  true,
 		GenericHandler: func(job *Job) error {
-			arg3 = job.Args["a"].(float64)
+			var ok bool
+
+			arg3, ok = job.Args["a"].(float64)
+			assert.True(t, ok)
+
 			return nil
 		},
 	}
@@ -68,7 +80,7 @@ func TestWorkerBasics(t *testing.T) {
 	_, err = enqueuer.Enqueue(job3, Q{"a": 3})
 	assert.Nil(t, err)
 
-	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, jobTypes, nil)
 	w.start()
 	w.drain()
 	w.stop()
@@ -109,7 +121,7 @@ func TestWorkerInProgress(t *testing.T) {
 		Name:       job1,
 		JobOptions: JobOptions{Priority: 1},
 		IsGeneric:  true,
-		GenericHandler: func(job *Job) error {
+		GenericHandler: func(_ *Job) error {
 			time.Sleep(30 * time.Millisecond)
 			return nil
 		},
@@ -119,7 +131,7 @@ func TestWorkerInProgress(t *testing.T) {
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
 
-	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, jobTypes, nil)
 	w.start()
 
 	// instead of w.forceIter(), we'll wait for 10 milliseconds to let the job start
@@ -163,7 +175,7 @@ func TestWorkerRetry(t *testing.T) {
 		Name:       job1,
 		JobOptions: JobOptions{Priority: 1, MaxFails: 3},
 		IsGeneric:  true,
-		GenericHandler: func(job *Job) error {
+		GenericHandler: func(_ *Job) error {
 			return fmt.Errorf("sorry kid")
 		},
 	}
@@ -171,7 +183,7 @@ func TestWorkerRetry(t *testing.T) {
 	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
-	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, jobTypes, nil)
 	w.start()
 	w.drain()
 	w.stop()
@@ -206,7 +218,7 @@ func TestWorkerRetryWithCustomBackoff(t *testing.T) {
 	deleteRetryAndDead(ctx, redisAdapter, ns)
 	calledCustom := 0
 
-	custombo := func(job *Job) int64 {
+	custombo := func(_ *Job) int64 {
 		calledCustom++
 		return 5 // Always 5 seconds
 	}
@@ -216,7 +228,7 @@ func TestWorkerRetryWithCustomBackoff(t *testing.T) {
 		Name:       job1,
 		JobOptions: JobOptions{Priority: 1, MaxFails: 3, Backoff: custombo},
 		IsGeneric:  true,
-		GenericHandler: func(job *Job) error {
+		GenericHandler: func(_ *Job) error {
 			return fmt.Errorf("sorry kid")
 		},
 	}
@@ -224,7 +236,7 @@ func TestWorkerRetryWithCustomBackoff(t *testing.T) {
 	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
-	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, jobTypes, nil)
 	w.start()
 	w.drain()
 	w.stop()
@@ -264,7 +276,7 @@ func TestWorkerDead(t *testing.T) {
 		Name:       job1,
 		JobOptions: JobOptions{Priority: 1, MaxFails: 0},
 		IsGeneric:  true,
-		GenericHandler: func(job *Job) error {
+		GenericHandler: func(_ *Job) error {
 			return fmt.Errorf("sorry kid1")
 		},
 	}
@@ -272,7 +284,7 @@ func TestWorkerDead(t *testing.T) {
 		Name:       job2,
 		JobOptions: JobOptions{Priority: 1, MaxFails: 0, SkipDead: true},
 		IsGeneric:  true,
-		GenericHandler: func(job *Job) error {
+		GenericHandler: func(_ *Job) error {
 			return fmt.Errorf("sorry kid2")
 		},
 	}
@@ -282,7 +294,7 @@ func TestWorkerDead(t *testing.T) {
 	assert.Nil(t, err)
 	_, err = enqueuer.Enqueue(job2, nil)
 	assert.Nil(t, err)
-	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, jobTypes, nil)
 	w.start()
 	w.drain()
 	w.stop()
@@ -326,7 +338,7 @@ func TestWorkersPaused(t *testing.T) {
 		Name:       job1,
 		JobOptions: JobOptions{Priority: 1},
 		IsGeneric:  true,
-		GenericHandler: func(job *Job) error {
+		GenericHandler: func(_ *Job) error {
 			time.Sleep(30 * time.Millisecond)
 			return nil
 		},
@@ -336,7 +348,7 @@ func TestWorkersPaused(t *testing.T) {
 	_, err := enqueuer.Enqueue(job1, Q{"a": 1})
 	assert.Nil(t, err)
 
-	w := newWorker(ns, "1", redisAdapter, tstCtxType, nil, jobTypes, nil)
+	w := newWorker(ns, "1", redisAdapter, tstCtxType, jobTypes, nil)
 	// pause the jobs prior to starting
 	err = pauseJobs(ctx, ns, job1, redisAdapter)
 	assert.Nil(t, err)
@@ -376,8 +388,9 @@ func TestWorkersPaused(t *testing.T) {
 }
 
 // Test that in the case of an unavailable Redis server,
-// the worker loop exits in the case of a WorkerPool.Stop
-func TestStop(t *testing.T) {
+// the worker loop exits in the case of a WorkerPool.Stop.
+func TestStop(_ *testing.T) {
+	// TODO: something should be tested here
 	redisAdapter := newTestBrokenRedis()
 	wp := NewWorkerPool(TestContext{}, 10, "work", redisAdapter)
 	wp.Start()
@@ -399,7 +412,7 @@ func BenchmarkJobProcessing(b *testing.B) {
 	}
 
 	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(c *TestContext, job *Job) error {
+	wp.Job("wat", func(_ *TestContext, _ *Job) error {
 		return nil
 	})
 
@@ -418,9 +431,7 @@ func newTestRedis(addr string) workredis.Redis {
 			Password: "",
 			DB:       0,
 		})
-		return goredisv8adapter.NewGoredisAdapter(rdb)
-	case "redigo":
-		fallthrough
+		return goredisv8adapter.NewAdapter(rdb)
 	default:
 		pool := &redis.Pool{
 			MaxActive:   10,
@@ -435,7 +446,7 @@ func newTestRedis(addr string) workredis.Redis {
 			},
 			Wait: true,
 		}
-		return redigoadapter.NewRedigoAdapter(pool)
+		return redigoadapter.NewAdapter(pool)
 	}
 }
 
@@ -449,9 +460,7 @@ func newTestBrokenRedis() workredis.Redis {
 			Password: "",
 			DB:       0,
 		})
-		return goredisv8adapter.NewGoredisAdapter(rdb)
-	case "redigo":
-		fallthrough
+		return goredisv8adapter.NewAdapter(rdb)
 	default:
 		pool := &redis.Pool{
 			Dial: func() (redis.Conn, error) {
@@ -462,7 +471,7 @@ func newTestBrokenRedis() workredis.Redis {
 				return c, nil
 			},
 		}
-		return redigoadapter.NewRedigoAdapter(pool)
+		return redigoadapter.NewAdapter(pool)
 	}
 }
 
@@ -526,7 +535,7 @@ func jobOnZset(ctx context.Context, redisAdapter workredis.Redis, key string) (i
 		panic("ZRANGE error: " + err.Error())
 	}
 
-	for r.Next() {
+	if r.Next() {
 		vv, score := r.Val()
 
 		var member []byte
@@ -599,17 +608,16 @@ func unpauseJobs(ctx context.Context, namespace, jobName string, redisAdapter wo
 	return nil
 }
 
-func deletePausedAndLockedKeys(ctx context.Context, namespace, jobName string, redisAdapter workredis.Redis) error {
+func deletePausedAndLockedKeys(ctx context.Context, namespace, jobName string, redisAdapter workredis.Redis) {
 	if err := redisAdapter.Del(ctx, redisKeyJobsPaused(namespace, jobName)); err != nil {
-		return err
+		panic("could not delete paused key: " + err.Error())
 	}
 	if err := redisAdapter.Del(ctx, redisKeyJobsLock(namespace, jobName)); err != nil {
-		return err
+		panic("could not delete lock key: " + err.Error())
 	}
 	if err := redisAdapter.Del(ctx, redisKeyJobsLockInfo(namespace, jobName)); err != nil {
-		return err
+		panic("could not delete lock info key: " + err.Error())
 	}
-	return nil
 }
 
 type emptyCtx struct{}
@@ -622,22 +630,26 @@ type emptyCtx struct{}
 func TestWorkerPoolStop(t *testing.T) {
 	ns := "will_it_end"
 	redisAdapter := newTestRedis(":6379")
+	numIters := 30
+
 	var started, stopped int32
-	num_iters := 30
 
 	wp := NewWorkerPool(emptyCtx{}, 2, ns, redisAdapter)
 
-	wp.Job("sample_job", func(c *emptyCtx, job *Job) error {
+	wp.Job("sample_job", func(_ *emptyCtx, _ *Job) error {
 		atomic.AddInt32(&started, 1)
 		time.Sleep(1 * time.Second)
 		atomic.AddInt32(&stopped, 1)
 		return nil
 	})
 
-	var enqueuer = NewEnqueuer(ns, redisAdapter)
+	enqueuer := NewEnqueuer(ns, redisAdapter)
 
-	for i := 0; i <= num_iters; i++ {
-		enqueuer.Enqueue("sample_job", Q{})
+	for i := 0; i <= numIters; i++ {
+		_, err := enqueuer.Enqueue("sample_job", Q{})
+		if err != nil {
+			t.Fatalf("Error enqueuing job: %s", err)
+		}
 	}
 
 	// Start the pool and quit before it has had a chance to complete
@@ -650,7 +662,7 @@ func TestWorkerPoolStop(t *testing.T) {
 		t.Errorf("Expected that jobs were finished and not killed while processing (started=%d, stopped=%d)", started, stopped)
 	}
 
-	if started >= int32(num_iters) {
+	if started >= int32(numIters) {
 		t.Errorf("Expected that jobs queue was not completely emptied.")
 	}
 }

@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	workredis "github.com/GettEngineering/work/redis"
 	"github.com/stretchr/testify/assert"
+
+	workredis "github.com/GettEngineering/work/redis"
 )
 
 type tstCtx struct {
-	a int
 	bytes.Buffer
 }
 
@@ -24,19 +24,19 @@ func (c *tstCtx) record(s string) {
 var tstCtxType = reflect.TypeOf(tstCtx{})
 
 func TestWorkerPoolHandlerValidations(t *testing.T) {
-	var cases = []struct {
+	cases := []struct {
 		fn   interface{}
 		good bool
 	}{
-		{func(j *Job) error { return nil }, true},
-		{func(c *tstCtx, j *Job) error { return nil }, true},
-		{func(c *tstCtx, j *Job) {}, false},
-		{func(c *tstCtx, j *Job) string { return "" }, false},
-		{func(c *tstCtx, j *Job) (error, string) { return nil, "" }, false},
-		{func(c *tstCtx) error { return nil }, false},
-		{func(c tstCtx, j *Job) error { return nil }, false},
+		{func(_ *Job) error { return nil }, true},
+		{func(_ *tstCtx, _ *Job) error { return nil }, true},
+		{func(_ *tstCtx, _ *Job) {}, false},
+		{func(_ *tstCtx, _ *Job) string { return "" }, false},
+		{func(_ *tstCtx, _ *Job) (error, string) { return nil, "" }, false}, //nolint:stylecheck // it's a test case
+		{func(_ *tstCtx) error { return nil }, false},
+		{func(_ tstCtx, _ *Job) error { return nil }, false},
 		{func() error { return nil }, false},
-		{func(c *tstCtx, j *Job, wat string) error { return nil }, false},
+		{func(_ *tstCtx, _ *Job, _ string) error { return nil }, false},
 	}
 
 	for i, testCase := range cases {
@@ -48,21 +48,21 @@ func TestWorkerPoolHandlerValidations(t *testing.T) {
 }
 
 func TestWorkerPoolMiddlewareValidations(t *testing.T) {
-	var cases = []struct {
+	cases := []struct {
 		fn   interface{}
 		good bool
 	}{
-		{func(j *Job, n NextMiddlewareFunc) error { return nil }, true},
-		{func(c *tstCtx, j *Job, n NextMiddlewareFunc) error { return nil }, true},
-		{func(c *tstCtx, j *Job) error { return nil }, false},
-		{func(c *tstCtx, j *Job, n NextMiddlewareFunc) {}, false},
-		{func(c *tstCtx, j *Job, n NextMiddlewareFunc) string { return "" }, false},
-		{func(c *tstCtx, j *Job, n NextMiddlewareFunc) (error, string) { return nil, "" }, false},
-		{func(c *tstCtx, n NextMiddlewareFunc) error { return nil }, false},
-		{func(c tstCtx, j *Job, n NextMiddlewareFunc) error { return nil }, false},
+		{func(_ *Job, _ NextMiddlewareFunc) error { return nil }, true},
+		{func(_ *tstCtx, _ *Job, _ NextMiddlewareFunc) error { return nil }, true},
+		{func(_ *tstCtx, _ *Job) error { return nil }, false},
+		{func(_ *tstCtx, _ *Job, _ NextMiddlewareFunc) {}, false},
+		{func(_ *tstCtx, _ *Job, _ NextMiddlewareFunc) string { return "" }, false},
+		{func(_ *tstCtx, _ *Job, _ NextMiddlewareFunc) (error, string) { return nil, "" }, false}, //nolint:stylecheck // it's a test case
+		{func(_ *tstCtx, _ NextMiddlewareFunc) error { return nil }, false},
+		{func(_ tstCtx, _ *Job, _ NextMiddlewareFunc) error { return nil }, false},
 		{func() error { return nil }, false},
-		{func(c *tstCtx, j *Job, wat string) error { return nil }, false},
-		{func(c *tstCtx, j *Job, n NextMiddlewareFunc, wat string) error { return nil }, false},
+		{func(_ *tstCtx, _ *Job, _ string) error { return nil }, false},
+		{func(_ *tstCtx, _ *Job, _ NextMiddlewareFunc, _ string) error { return nil }, false},
 	}
 
 	for i, testCase := range cases {
@@ -73,7 +73,8 @@ func TestWorkerPoolMiddlewareValidations(t *testing.T) {
 	}
 }
 
-func TestWorkerPoolStartStop(t *testing.T) {
+func TestWorkerPoolStartStop(_ *testing.T) {
+	// TODO: something should be tested here
 	redisAdapter := newTestRedis(":6379")
 	ns := "work"
 	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
@@ -138,6 +139,7 @@ func TestWorkersPoolRunSingleThreaded(t *testing.T) {
 	start := time.Now()
 	totalRuntime := time.Duration(sleepTime*numJobs) * time.Millisecond
 	time.Sleep(10 * time.Millisecond)
+
 	for time.Since(start) < totalRuntime {
 		// jobs in progress, lock count for the job and lock info for the pool should never exceed 1
 		jobsInProgress := listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, wp.workerPoolID, job1))
@@ -176,9 +178,10 @@ func TestWorkerPoolPauseSingleThreadedJobs(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// pause work, provide time for outstanding jobs to finish and queue up another job
-	pauseJobs(ctx, ns, job1, redisAdapter)
+	err := pauseJobs(ctx, ns, job1, redisAdapter)
+	assert.NoError(t, err)
 	time.Sleep(2 * time.Millisecond)
-	_, err := enqueuer.Enqueue(job1, Q{"sleep": sleepTime})
+	_, err = enqueuer.Enqueue(job1, Q{"sleep": sleepTime})
 	assert.Nil(t, err)
 
 	// check that we still have some jobs to process
@@ -187,6 +190,7 @@ func TestWorkerPoolPauseSingleThreadedJobs(t *testing.T) {
 	// now make sure no jobs get started until we unpause
 	start := time.Now()
 	totalRuntime := time.Duration(sleepTime*numJobs) * time.Millisecond
+
 	for time.Since(start) < totalRuntime {
 		assert.EqualValues(t, 0, listSize(ctx, redisAdapter, redisKeyJobsInProgress(ns, wp.workerPoolID, job1)))
 		// lock count for the job and lock info for the pool should both be at 1 while job is running
@@ -196,7 +200,8 @@ func TestWorkerPoolPauseSingleThreadedJobs(t *testing.T) {
 	}
 
 	// unpause work and get past the backoff time
-	unpauseJobs(ctx, ns, job1, redisAdapter)
+	err = unpauseJobs(ctx, ns, job1, redisAdapter)
+	assert.NoError(t, err)
 	time.Sleep(10 * time.Millisecond)
 
 	wp.Drain()
@@ -209,7 +214,10 @@ func TestWorkerPoolPauseSingleThreadedJobs(t *testing.T) {
 	assert.EqualValues(t, 0, hgetInt64(ctx, redisAdapter, redisKeyJobsLockInfo(ns, job1), wp.workerPoolID))
 }
 
-// Test Helpers
+//
+// Test helpers.
+//
+
 func (t *TestContext) SleepyJob(job *Job) error {
 	sleepTime := time.Duration(job.ArgInt64("sleep"))
 	time.Sleep(sleepTime * time.Millisecond)

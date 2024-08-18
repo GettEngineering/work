@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"time"
 
@@ -16,16 +17,18 @@ import (
 	redigoadapter "github.com/GettEngineering/work/redis/adapters/redigo"
 )
 
-var redisHostPort = flag.String("redis", ":6379", "redis hostport")
-var redisNamespace = flag.String("ns", "work", "redis namespace")
-var jobName = flag.String("job", "", "job name")
-var jobArgs = flag.String("args", "{}", "job arguments")
+var (
+	redisHostPort  = flag.String("redis", ":6379", "redis hostport")
+	redisNamespace = flag.String("ns", "work", "redis namespace")
+	jobName        = flag.String("job", "", "job name")
+	jobArgs        = flag.String("args", "{}", "job arguments")
+)
 
 func main() {
 	flag.Parse()
 
 	if *jobName == "" {
-		fmt.Println("no job specified")
+		log.Println("no job specified")
 		os.Exit(1)
 	}
 
@@ -34,12 +37,15 @@ func main() {
 	var args map[string]interface{}
 	err := json.Unmarshal([]byte(*jobArgs), &args)
 	if err != nil {
-		fmt.Println("invalid args:", err)
+		log.Println("invalid args:", err)
 		os.Exit(1)
 	}
 
 	en := work.NewEnqueuer(*redisNamespace, redisAdapter)
-	en.Enqueue(*jobName, args)
+	if _, err := en.Enqueue(*jobName, args); err != nil {
+		log.Println("enqueue error:", err.Error())
+		os.Exit(1)
+	}
 }
 
 func newRedis(addr string) workredis.Redis {
@@ -52,21 +58,19 @@ func newRedis(addr string) workredis.Redis {
 			Dial: func() (redis.Conn, error) {
 				c, err := redis.Dial("tcp", addr)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("dial redis: %w", err)
 				}
 				return c, nil
 			},
 			Wait: true,
 		}
-		return redigoadapter.NewRedigoAdapter(pool)
-	case "goredisv8":
-		fallthrough
+		return redigoadapter.NewAdapter(pool)
 	default:
 		rdb := goredisv8.NewClient(&goredisv8.Options{
 			Addr:     addr,
 			Password: "",
 			DB:       0,
 		})
-		return goredisv8adapter.NewGoredisAdapter(rdb)
+		return goredisv8adapter.NewAdapter(rdb)
 	}
 }

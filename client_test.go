@@ -20,13 +20,13 @@ func TestClientWorkerPoolHeartbeats(t *testing.T) {
 	cleanKeyspace(ctx, ns, redisAdapter)
 
 	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(job *Job) error { return nil })
-	wp.Job("bob", func(job *Job) error { return nil })
+	wp.Job("wat", func(_ *Job) error { return nil })
+	wp.Job("bob", func(_ *Job) error { return nil })
 	wp.Start()
 
 	wp2 := NewWorkerPool(TestContext{}, 11, ns, redisAdapter)
-	wp2.Job("foo", func(job *Job) error { return nil })
-	wp2.Job("bar", func(job *Job) error { return nil })
+	wp2.Job("foo", func(_ *Job) error { return nil })
+	wp2.Job("bar", func(_ *Job) error { return nil })
 	wp2.Start()
 
 	time.Sleep(20 * time.Millisecond)
@@ -79,11 +79,11 @@ func TestClientWorkerObservations(t *testing.T) {
 	assert.Nil(t, err)
 
 	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(job *Job) error {
+	wp.Job("wat", func(_ *Job) error {
 		time.Sleep(50 * time.Millisecond)
 		return nil
 	})
-	wp.Job("foo", func(job *Job) error {
+	wp.Job("foo", func(_ *Job) error {
 		time.Sleep(50 * time.Millisecond)
 		return nil
 	})
@@ -99,35 +99,26 @@ func TestClientWorkerObservations(t *testing.T) {
 	watCount := 0
 	fooCount := 0
 	for _, ob := range observations {
-		if ob.JobName == "foo" {
+		switch ob.JobName {
+		case "foo":
 			fooCount++
 			assert.True(t, ob.IsBusy)
 			assert.Equal(t, `{"a":3,"b":4}`, ob.ArgsJSON)
 			assert.True(t, (nowEpochSeconds()-ob.StartedAt) <= 3)
 			assert.True(t, ob.JobID != "")
-		} else if ob.JobName == "wat" {
+		case "wat":
 			watCount++
 			assert.True(t, ob.IsBusy)
 			assert.Equal(t, `{"a":1,"b":2}`, ob.ArgsJSON)
 			assert.True(t, (nowEpochSeconds()-ob.StartedAt) <= 3)
 			assert.True(t, ob.JobID != "")
-		} else {
+		default:
 			assert.False(t, ob.IsBusy)
 		}
 		assert.True(t, ob.WorkerID != "")
 	}
 	assert.Equal(t, 1, watCount)
 	assert.Equal(t, 1, fooCount)
-
-	// time.Sleep(2000 * time.Millisecond)
-	//
-	// observations, err = client.WorkerObservations()
-	// assert.NoError(t, err)
-	// assert.Equal(t, 10, len(observations))
-	// for _, ob := range observations {
-	// 	assert.False(t, ob.IsBusy)
-	// 	assert.True(t, ob.WorkerID != "")
-	// }
 
 	wp.Stop()
 
@@ -144,19 +135,22 @@ func TestClientQueues(t *testing.T) {
 
 	enqueuer := NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
+	assert.NoError(t, err)
 	_, err = enqueuer.Enqueue("foo", nil)
+	assert.NoError(t, err)
 	_, err = enqueuer.Enqueue("zaz", nil)
+	assert.NoError(t, err)
 
 	// Start a pool to work on it. It's going to work on the queues
 	// side effect of that is knowing which jobs are avail
 	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(job *Job) error {
+	wp.Job("wat", func(_ *Job) error {
 		return nil
 	})
-	wp.Job("foo", func(job *Job) error {
+	wp.Job("foo", func(_ *Job) error {
 		return nil
 	})
-	wp.Job("zaz", func(job *Job) error {
+	wp.Job("zaz", func(_ *Job) error {
 		return nil
 	})
 	wp.Start()
@@ -164,12 +158,17 @@ func TestClientQueues(t *testing.T) {
 	wp.Stop()
 
 	setNowEpochSecondsMock(1425263409)
+
 	defer resetNowEpochSecondsMock()
-	enqueuer.Enqueue("foo", nil)
+
+	_, err = enqueuer.Enqueue("foo", nil)
+	assert.NoError(t, err)
 	setNowEpochSecondsMock(1425263509)
-	enqueuer.Enqueue("foo", nil)
+	_, err = enqueuer.Enqueue("foo", nil)
+	assert.NoError(t, err)
 	setNowEpochSecondsMock(1425263609)
-	enqueuer.Enqueue("wat", nil)
+	_, err = enqueuer.Enqueue("wat", nil)
+	assert.NoError(t, err)
 
 	setNowEpochSecondsMock(1425263709)
 	client := NewClient(ns, redisAdapter)
@@ -197,10 +196,15 @@ func TestClientScheduledJobs(t *testing.T) {
 	enqueuer := NewEnqueuer(ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
+
 	defer resetNowEpochSecondsMock()
+
 	_, err := enqueuer.EnqueueIn("wat", 0, Q{"a": 1, "b": 2})
+	assert.NoError(t, err)
 	_, err = enqueuer.EnqueueIn("zaz", 4, Q{"a": 3, "b": 4})
+	assert.NoError(t, err)
 	_, err = enqueuer.EnqueueIn("foo", 2, Q{"a": 3, "b": 4})
+	assert.NoError(t, err)
 
 	client := NewClient(ns, redisAdapter)
 	jobs, count, err := client.ScheduledJobs(1)
@@ -244,6 +248,7 @@ func TestClientRetryJobs(t *testing.T) {
 	cleanKeyspace(ctx, ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
+
 	defer resetNowEpochSecondsMock()
 
 	enqueuer := NewEnqueuer(ns, redisAdapter)
@@ -253,7 +258,7 @@ func TestClientRetryJobs(t *testing.T) {
 	setNowEpochSecondsMock(1425263429)
 
 	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(job *Job) error {
+	wp.Job("wat", func(_ *Job) error {
 		return fmt.Errorf("ohno")
 	})
 	wp.Start()
@@ -284,6 +289,7 @@ func TestClientDeadJobs(t *testing.T) {
 	cleanKeyspace(ctx, ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
+
 	defer resetNowEpochSecondsMock()
 
 	enqueuer := NewEnqueuer(ns, redisAdapter)
@@ -293,7 +299,7 @@ func TestClientDeadJobs(t *testing.T) {
 	setNowEpochSecondsMock(1425263429)
 
 	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.JobWithOptions("wat", JobOptions{Priority: 1, MaxFails: 1}, func(job *Job) error {
+	wp.JobWithOptions("wat", JobOptions{Priority: 1, MaxFails: 1}, func(_ *Job) error {
 		return fmt.Errorf("ohno")
 	})
 	wp.Start()
@@ -301,12 +307,14 @@ func TestClientDeadJobs(t *testing.T) {
 	wp.Stop()
 
 	client := NewClient(ns, redisAdapter)
+
 	jobs, count, err := client.DeadJobs(1)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(jobs))
 	assert.EqualValues(t, 1, count)
 
 	deadJob := jobs[0]
+
 	if len(jobs) == 1 {
 		assert.EqualValues(t, 1425263429, jobs[0].FailedAt)
 		assert.Equal(t, "wat", jobs[0].Name)
@@ -360,7 +368,6 @@ func TestClientDeleteDeadJob(t *testing.T) {
 		assert.Equal(t, tot-1, count)
 		tot--
 	}
-
 }
 
 func TestClientRetryDeadJob(t *testing.T) {
@@ -497,6 +504,7 @@ func TestClientRetryAllDeadJobs(t *testing.T) {
 	cleanKeyspace(ctx, ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
+
 	defer resetNowEpochSecondsMock()
 
 	insertDeadJob(ctx, ns, redisAdapter, "wat1", 12345, 12347)
@@ -674,6 +682,7 @@ func TestClientDeleteRetryJob(t *testing.T) {
 	cleanKeyspace(ctx, ns, redisAdapter)
 
 	setNowEpochSecondsMock(1425263409)
+
 	defer resetNowEpochSecondsMock()
 
 	enqueuer := NewEnqueuer(ns, redisAdapter)
@@ -683,7 +692,7 @@ func TestClientDeleteRetryJob(t *testing.T) {
 	setNowEpochSecondsMock(1425263429)
 
 	wp := NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(job *Job) error {
+	wp.Job("wat", func(_ *Job) error {
 		return fmt.Errorf("ohno")
 	})
 	wp.Start()

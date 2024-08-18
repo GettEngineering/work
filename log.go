@@ -1,7 +1,7 @@
 package work
 
-import "fmt"
+import "log"
 
 func logError(key string, err error) {
-	fmt.Printf("ERROR: %s - %s\n", key, err.Error())
+	log.Printf("ERROR: %s - %s\n", key, err.Error())
 }

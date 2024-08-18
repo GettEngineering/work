@@ -10,27 +10,27 @@ import (
 	workredis "github.com/GettEngineering/work/redis"
 )
 
-var _ workredis.Redis = (*GoredisAdapter)(nil)
+var _ workredis.Redis = (*Adapter)(nil)
 
-type GoredisAdapter struct {
+type Adapter struct {
 	rds  *redis.Client
 	pipe redis.Pipeliner
 }
 
-func NewGoredisAdapter(rds *redis.Client) *GoredisAdapter {
-	return &GoredisAdapter{
+func NewAdapter(rds *redis.Client) *Adapter {
+	return &Adapter{
 		rds: rds,
 	}
 }
 
-func (r *GoredisAdapter) NewScript(src string, _ int) workredis.Script {
+func (r *Adapter) NewScript(src string, _ int) workredis.Script {
 	return goredisScript{
 		rds:    r.rds,
 		script: redis.NewScript(src),
 	}
 }
 
-func (r *GoredisAdapter) Get(ctx context.Context, key string) workredis.Reply {
+func (r *Adapter) Get(ctx context.Context, key string) workredis.Reply {
 	if r.pipe != nil {
 		return &goredisReply{reply: r.pipe.Get(ctx, key)}
 	}
@@ -38,7 +38,7 @@ func (r *GoredisAdapter) Get(ctx context.Context, key string) workredis.Reply {
 	return &goredisReply{reply: r.rds.Get(ctx, key)}
 }
 
-func (r *GoredisAdapter) Decr(ctx context.Context, key string) error {
+func (r *Adapter) Decr(ctx context.Context, key string) error {
 	if r.pipe != nil {
 		_, err := r.pipe.Decr(ctx, key).Result()
 		return err
@@ -49,7 +49,7 @@ func (r *GoredisAdapter) Decr(ctx context.Context, key string) error {
 	return err
 }
 
-func (r *GoredisAdapter) Del(ctx context.Context, keys ...string) error {
+func (r *Adapter) Del(ctx context.Context, keys ...string) error {
 	if r.pipe != nil {
 		return r.pipe.Del(ctx, keys...).Err()
 	}
@@ -57,7 +57,7 @@ func (r *GoredisAdapter) Del(ctx context.Context, keys ...string) error {
 	return r.rds.Del(ctx, keys...).Err()
 }
 
-func (r *GoredisAdapter) Exists(ctx context.Context, key string) (bool, error) {
+func (r *Adapter) Exists(ctx context.Context, key string) (bool, error) {
 	var (
 		reply int64
 		err   error
@@ -72,7 +72,7 @@ func (r *GoredisAdapter) Exists(ctx context.Context, key string) (bool, error) {
 	return reply == 1, err
 }
 
-func (r *GoredisAdapter) Expire(ctx context.Context, key string, expiration time.Duration) error {
+func (r *Adapter) Expire(ctx context.Context, key string, expiration time.Duration) error {
 	if r.pipe != nil {
 		return r.pipe.Expire(ctx, key, expiration).Err()
 	}
@@ -80,7 +80,7 @@ func (r *GoredisAdapter) Expire(ctx context.Context, key string, expiration time
 	return r.rds.Expire(ctx, key, expiration).Err()
 }
 
-func (r *GoredisAdapter) HGet(ctx context.Context, key, field string) workredis.Reply {
+func (r *Adapter) HGet(ctx context.Context, key, field string) workredis.Reply {
 	if r.pipe != nil {
 		return &goredisReply{reply: r.pipe.HGet(ctx, key, field)}
 	}
@@ -88,7 +88,7 @@ func (r *GoredisAdapter) HGet(ctx context.Context, key, field string) workredis.
 	return &goredisReply{r.rds.HGet(ctx, key, field)}
 }
 
-func (r *GoredisAdapter) HGetAll(ctx context.Context, key string) workredis.StringStringMapReply {
+func (r *Adapter) HGetAll(ctx context.Context, key string) workredis.StringStringMapReply {
 	if r.pipe != nil {
 		return r.pipe.HGetAll(ctx, key)
 	}
@@ -96,7 +96,7 @@ func (r *GoredisAdapter) HGetAll(ctx context.Context, key string) workredis.Stri
 	return r.rds.HGetAll(ctx, key)
 }
 
-func (r *GoredisAdapter) HIncrBy(ctx context.Context, key, field string, incr int64) error {
+func (r *Adapter) HIncrBy(ctx context.Context, key, field string, incr int64) error {
 	if r.pipe != nil {
 		_, err := r.pipe.HIncrBy(ctx, key, field, incr).Result()
 		return err
@@ -107,7 +107,7 @@ func (r *GoredisAdapter) HIncrBy(ctx context.Context, key, field string, incr in
 	return err
 }
 
-func (r *GoredisAdapter) HSet(ctx context.Context, key string, fieldvals ...any) error {
+func (r *Adapter) HSet(ctx context.Context, key string, fieldvals ...any) error {
 	if r.pipe != nil {
 		return r.pipe.HSet(ctx, key, fieldvals...).Err()
 	}
@@ -115,7 +115,7 @@ func (r *GoredisAdapter) HSet(ctx context.Context, key string, fieldvals ...any)
 	return r.rds.HSet(ctx, key, fieldvals...).Err()
 }
 
-func (r *GoredisAdapter) Incr(ctx context.Context, key string) error {
+func (r *Adapter) Incr(ctx context.Context, key string) error {
 	if r.pipe != nil {
 		return r.pipe.Incr(ctx, key).Err()
 	}
@@ -123,7 +123,7 @@ func (r *GoredisAdapter) Incr(ctx context.Context, key string) error {
 	return r.rds.Incr(ctx, key).Err()
 }
 
-func (r *GoredisAdapter) Keys(ctx context.Context, pattern string) ([]string, error) {
+func (r *Adapter) Keys(ctx context.Context, pattern string) ([]string, error) {
 	if r.pipe != nil {
 		return r.pipe.Keys(ctx, pattern).Result()
 	}
@@ -131,7 +131,7 @@ func (r *GoredisAdapter) Keys(ctx context.Context, pattern string) ([]string, er
 	return r.rds.Keys(ctx, pattern).Result()
 }
 
-func (r *GoredisAdapter) LIndex(ctx context.Context, key string, index int64) workredis.Reply {
+func (r *Adapter) LIndex(ctx context.Context, key string, index int64) workredis.Reply {
 	if r.pipe != nil {
 		return &goredisReply{reply: r.pipe.LIndex(ctx, key, index)}
 	}
@@ -139,7 +139,7 @@ func (r *GoredisAdapter) LIndex(ctx context.Context, key string, index int64) wo
 	return &goredisReply{reply: r.rds.LIndex(ctx, key, index)}
 }
 
-func (r *GoredisAdapter) LLen(ctx context.Context, key string) workredis.IntReply {
+func (r *Adapter) LLen(ctx context.Context, key string) workredis.IntReply {
 	if r.pipe != nil {
 		return r.pipe.LLen(ctx, key)
 	}
@@ -147,7 +147,7 @@ func (r *GoredisAdapter) LLen(ctx context.Context, key string) workredis.IntRepl
 	return r.rds.LLen(ctx, key)
 }
 
-func (r *GoredisAdapter) LPush(ctx context.Context, key string, value any) error {
+func (r *Adapter) LPush(ctx context.Context, key string, value any) error {
 	if r.pipe != nil {
 		return r.pipe.LPush(ctx, key, value).Err()
 	}
@@ -155,7 +155,7 @@ func (r *GoredisAdapter) LPush(ctx context.Context, key string, value any) error
 	return r.rds.LPush(ctx, key, value).Err()
 }
 
-func (r *GoredisAdapter) LRem(ctx context.Context, key string, value any) error {
+func (r *Adapter) LRem(ctx context.Context, key string, value any) error {
 	if r.pipe != nil {
 		_, err := r.pipe.LRem(ctx, key, 1, value).Result()
 		return err
@@ -166,7 +166,7 @@ func (r *GoredisAdapter) LRem(ctx context.Context, key string, value any) error 
 	return err
 }
 
-func (r *GoredisAdapter) RPop(ctx context.Context, key string) workredis.Reply {
+func (r *Adapter) RPop(ctx context.Context, key string) workredis.Reply {
 	if r.pipe != nil {
 		return &goredisReply{reply: r.pipe.RPop(ctx, key)}
 	}
@@ -174,7 +174,7 @@ func (r *GoredisAdapter) RPop(ctx context.Context, key string) workredis.Reply {
 	return &goredisReply{reply: r.rds.RPop(ctx, key)}
 }
 
-func (r *GoredisAdapter) RPush(ctx context.Context, key string, value any) error {
+func (r *Adapter) RPush(ctx context.Context, key string, value any) error {
 	if r.pipe != nil {
 		return r.pipe.RPush(ctx, key, value).Err()
 	}
@@ -182,7 +182,7 @@ func (r *GoredisAdapter) RPush(ctx context.Context, key string, value any) error
 	return r.rds.RPush(ctx, key, value).Err()
 }
 
-func (r *GoredisAdapter) SAdd(ctx context.Context, key string, members ...any) error {
+func (r *Adapter) SAdd(ctx context.Context, key string, members ...any) error {
 	if r.pipe != nil {
 		return r.pipe.SAdd(ctx, key, members...).Err()
 	}
@@ -190,7 +190,7 @@ func (r *GoredisAdapter) SAdd(ctx context.Context, key string, members ...any) e
 	return r.rds.SAdd(ctx, key, members...).Err()
 }
 
-func (r *GoredisAdapter) SCard(ctx context.Context, key string) (int64, error) {
+func (r *Adapter) SCard(ctx context.Context, key string) (int64, error) {
 	if r.pipe != nil {
 		return r.pipe.SCard(ctx, key).Result()
 	}
@@ -198,7 +198,7 @@ func (r *GoredisAdapter) SCard(ctx context.Context, key string) (int64, error) {
 	return r.rds.SCard(ctx, key).Result()
 }
 
-func (r *GoredisAdapter) Set(ctx context.Context, key string, value any) error {
+func (r *Adapter) Set(ctx context.Context, key string, value any) error {
 	if r.pipe != nil {
 		return r.pipe.Set(ctx, key, value, 0).Err()
 	}
@@ -206,7 +206,7 @@ func (r *GoredisAdapter) Set(ctx context.Context, key string, value any) error {
 	return r.rds.Set(ctx, key, value, 0).Err()
 }
 
-func (r *GoredisAdapter) SIsMember(ctx context.Context, key string, member any) (bool, error) {
+func (r *Adapter) SIsMember(ctx context.Context, key string, member any) (bool, error) {
 	if r.pipe != nil {
 		return r.pipe.SIsMember(ctx, key, member).Result()
 	}
@@ -214,7 +214,7 @@ func (r *GoredisAdapter) SIsMember(ctx context.Context, key string, member any) 
 	return r.rds.SIsMember(ctx, key, member).Result()
 }
 
-func (r *GoredisAdapter) SMembers(ctx context.Context, key string) ([]string, error) {
+func (r *Adapter) SMembers(ctx context.Context, key string) ([]string, error) {
 	if r.pipe != nil {
 		return r.pipe.SMembers(ctx, key).Result()
 	}
@@ -222,7 +222,7 @@ func (r *GoredisAdapter) SMembers(ctx context.Context, key string) ([]string, er
 	return r.rds.SMembers(ctx, key).Result()
 }
 
-func (r *GoredisAdapter) SRem(ctx context.Context, key string, member any) error {
+func (r *Adapter) SRem(ctx context.Context, key string, member any) error {
 	if r.pipe != nil {
 		_, err := r.pipe.SRem(ctx, key, member).Result()
 		return err
@@ -233,7 +233,7 @@ func (r *GoredisAdapter) SRem(ctx context.Context, key string, member any) error
 	return err
 }
 
-func (r *GoredisAdapter) ZAdd(ctx context.Context, key string, score float64, member any) error {
+func (r *Adapter) ZAdd(ctx context.Context, key string, score float64, member any) error {
 	if r.pipe != nil {
 		return r.pipe.ZAdd(ctx, key, &redis.Z{Score: score, Member: member}).Err()
 	}
@@ -241,7 +241,7 @@ func (r *GoredisAdapter) ZAdd(ctx context.Context, key string, score float64, me
 	return r.rds.ZAdd(ctx, key, &redis.Z{Score: score, Member: member}).Err()
 }
 
-func (r *GoredisAdapter) ZCard(ctx context.Context, key string) (int64, error) {
+func (r *Adapter) ZCard(ctx context.Context, key string) (int64, error) {
 	if r.pipe != nil {
 		return r.pipe.ZCard(ctx, key).Result()
 	}
@@ -249,15 +249,15 @@ func (r *GoredisAdapter) ZCard(ctx context.Context, key string) (int64, error) {
 	return r.rds.ZCard(ctx, key).Result()
 }
 
-func (r *GoredisAdapter) ZRangeByScoreWithScores(
+func (r *Adapter) ZRangeByScoreWithScores(
 	ctx context.Context,
 	key string,
-	min, max string,
+	minScore, maxScore string,
 	offset, count int64,
 ) (workredis.ZRanger, error) {
 	var zres *redis.ZSliceCmd
 
-	args := &redis.ZRangeBy{Min: min, Max: max, Offset: offset, Count: count}
+	args := &redis.ZRangeBy{Min: minScore, Max: maxScore, Offset: offset, Count: count}
 
 	if r.pipe != nil {
 		zres = r.pipe.ZRangeByScoreWithScores(ctx, key, args)
@@ -273,7 +273,7 @@ func (r *GoredisAdapter) ZRangeByScoreWithScores(
 	return newGoredisZrange(zs), nil
 }
 
-func (r *GoredisAdapter) ZRangeWithScores(
+func (r *Adapter) ZRangeWithScores(
 	ctx context.Context,
 	key string,
 	start, stop int64,
@@ -294,7 +294,7 @@ func (r *GoredisAdapter) ZRangeWithScores(
 	return newGoredisZrange(zs), nil
 }
 
-func (r *GoredisAdapter) WithPipeline(ctx context.Context, fn func(workredis.Redis) error) error {
+func (r *Adapter) WithPipeline(ctx context.Context, fn func(workredis.Redis) error) error {
 	if r.pipe != nil {
 		return workredis.ErrPipeInProgress
 	}
@@ -303,7 +303,9 @@ func (r *GoredisAdapter) WithPipeline(ctx context.Context, fn func(workredis.Red
 	rcopy.pipe = r.rds.Pipeline()
 
 	if err := fn(&rcopy); err != nil {
-		rcopy.pipe.Discard()
+		if discardErr := rcopy.pipe.Discard(); discardErr != nil {
+			return errors.Join(err, discardErr)
+		}
 		return err
 	}
 
@@ -312,7 +314,7 @@ func (r *GoredisAdapter) WithPipeline(ctx context.Context, fn func(workredis.Red
 	return err
 }
 
-func (r *GoredisAdapter) WithMulti(ctx context.Context, fn func(workredis.Redis) error) error {
+func (r *Adapter) WithMulti(ctx context.Context, fn func(workredis.Redis) error) error {
 	if r.pipe != nil {
 		return workredis.ErrPipeInProgress
 	}
@@ -321,7 +323,9 @@ func (r *GoredisAdapter) WithMulti(ctx context.Context, fn func(workredis.Redis)
 	rcopy.pipe = r.rds.TxPipeline()
 
 	if err := fn(&rcopy); err != nil {
-		rcopy.pipe.Discard()
+		if discardErr := rcopy.pipe.Discard(); discardErr != nil {
+			return errors.Join(err, discardErr)
+		}
 		return err
 	}
 
@@ -447,7 +451,7 @@ func (z *goredisZrange) Next() bool {
 	return true
 }
 
-func (z *goredisZrange) Val() (any, float64) {
+func (z *goredisZrange) Val() (member any, score float64) {
 	if z.i == -1 {
 		return nil, 0
 	}

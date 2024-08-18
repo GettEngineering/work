@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -18,24 +18,17 @@ const (
 )
 
 type periodicEnqueuer struct {
-	namespace             string
-	redisAdapter          redis.Redis
-	periodicJobs          []*periodicJob
-	scheduledPeriodicJobs []*scheduledPeriodicJob
-	stopChan              chan struct{}
-	doneStoppingChan      chan struct{}
+	namespace        string
+	redisAdapter     redis.Redis
+	periodicJobs     []*periodicJob
+	stopChan         chan struct{}
+	doneStoppingChan chan struct{}
 }
 
 type periodicJob struct {
 	jobName  string
 	spec     string
 	schedule cron.Schedule
-}
-
-type scheduledPeriodicJob struct {
-	scheduledAt      time.Time
-	scheduledAtEpoch int64
-	*periodicJob
 }
 
 func newPeriodicEnqueuer(namespace string, redisAdapter redis.Redis, periodicJobs []*periodicJob) *periodicEnqueuer {
@@ -60,8 +53,9 @@ func (pe *periodicEnqueuer) stop() {
 func (pe *periodicEnqueuer) loop() {
 	ctx := context.TODO()
 
-	// Begin reaping periodically
-	timer := time.NewTimer(periodicEnqueuerSleep + time.Duration(rand.Intn(30))*time.Second)
+	// Begin reaping periodically.
+	//nolint:gosec // we don't need a crypto strong random number here
+	timer := time.NewTimer(periodicEnqueuerSleep + time.Duration(rand.IntN(30))*time.Second)
 	defer timer.Stop()
 
 	if pe.shouldEnqueue(ctx) {
@@ -77,7 +71,8 @@ func (pe *periodicEnqueuer) loop() {
 			pe.doneStoppingChan <- struct{}{}
 			return
 		case <-timer.C:
-			timer.Reset(periodicEnqueuerSleep + time.Duration(rand.Intn(30))*time.Second)
+			//nolint:gosec // we don't need a crypto strong random number here
+			timer.Reset(periodicEnqueuerSleep + time.Duration(rand.IntN(30))*time.Second)
 			if pe.shouldEnqueue(ctx) {
 				err := pe.enqueue(ctx)
 				if err != nil {
@@ -102,7 +97,9 @@ func (pe *periodicEnqueuer) enqueue(ctx context.Context) error {
 				Name: pj.jobName,
 				ID:   id,
 
-				// This is technically wrong, but this lets the bytes be identical for the same periodic job instance. If we don't do this, we'd need to use a different approach -- probably giving each periodic job its own history of the past 100 periodic jobs, and only scheduling a job if it's not in the history.
+				// This is technically wrong, but this lets the bytes be identical for the same periodic job instance.
+				// If we don't do this, we'd need to use a different approach -- probably giving each periodic job its own
+				// history of the past 100 periodic jobs, and only scheduling a job if it's not in the history.
 				EnqueuedAt: epoch,
 				Args:       nil,
 			}
@@ -112,14 +109,20 @@ func (pe *periodicEnqueuer) enqueue(ctx context.Context) error {
 				return err
 			}
 
-			err = pe.redisAdapter.ZAdd(ctx, redisKeyScheduled(pe.namespace), float64(epoch), rawJSON)
+			key := redisKeyScheduled(pe.namespace)
+			err = pe.redisAdapter.ZAdd(ctx, key, float64(epoch), rawJSON)
 			if err != nil {
-				return err
+				return fmt.Errorf("ZADD job to %s: %w", key, err)
 			}
 		}
 	}
 
-	return pe.redisAdapter.Set(ctx, redisKeyLastPeriodicEnqueue(pe.namespace), now)
+	key := redisKeyLastPeriodicEnqueue(pe.namespace)
+	if err := pe.redisAdapter.Set(ctx, key, now); err != nil {
+		return fmt.Errorf("SET to %s: %w", key, err)
+	}
+
+	return nil
 }
 
 func (pe *periodicEnqueuer) shouldEnqueue(ctx context.Context) bool {

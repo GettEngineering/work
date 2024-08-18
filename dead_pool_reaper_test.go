@@ -328,7 +328,7 @@ func TestDeadPoolReaperCleanStaleLocks(t *testing.T) {
 
 	reaper := newDeadPoolReaper(ns, redisAdapter, jobNames)
 	// clean lock info for workerPoolID1
-	reaper.cleanStaleLockInfo(ctx, workerPoolID1, jobNames)
+	err = reaper.cleanStaleLockInfo(ctx, workerPoolID1, jobNames)
 	assert.NoError(t, err)
 	assert.EqualValues(t, 2, getInt64(ctx, redisAdapter, lock1))      // job1 lock should be decr by 1
 	assert.EqualValues(t, 1, getInt64(ctx, redisAdapter, lock2))      // job2 lock is unchanged

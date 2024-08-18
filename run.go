@@ -5,9 +5,14 @@ import (
 	"reflect"
 )
 
-// returns an error if the job fails, or there's a panic, or we couldn't reflect correctly.
-// if we return an error, it signals we want the job to be retried.
-func runJob(job *Job, ctxType reflect.Type, middleware []*middlewareHandler, jt *jobType) (returnCtx reflect.Value, returnError error) {
+// runJob returns an error if the job fails, or there's a panic, or we couldn't reflect correctly.
+// If we return an error, it signals we want the job to be retried.
+func runJob(
+	job *Job,
+	ctxType reflect.Type,
+	middleware []*middlewareHandler,
+	jt *jobType,
+) (returnCtx reflect.Value, returnError error) {
 	returnCtx = reflect.New(ctxType)
 	currentMiddleware := 0
 	maxMiddleware := len(middleware)
@@ -25,7 +30,7 @@ func runJob(job *Job, ctxType reflect.Type, middleware []*middlewareHandler, jt 
 			if x == nil {
 				return nil
 			}
-			return x.(error)
+			return toError(x)
 		}
 		if jt.IsGeneric {
 			return jt.GenericHandler(job)
@@ -35,7 +40,7 @@ func runJob(job *Job, ctxType reflect.Type, middleware []*middlewareHandler, jt 
 		if x == nil {
 			return nil
 		}
-		return x.(error)
+		return toError(x)
 	}
 
 	defer func() {
@@ -48,7 +53,14 @@ func runJob(job *Job, ctxType reflect.Type, middleware []*middlewareHandler, jt 
 		}
 	}()
 
-	returnError = next()
+	return returnCtx, next()
+}
 
-	return
+func toError(v any) error {
+	err, ok := v.(error)
+	if !ok {
+		logError("runJob", fmt.Errorf("middleware returned non-error type: %T", v))
+	}
+
+	return err
 }

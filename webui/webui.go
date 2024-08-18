@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/braintree/manners"
 	"github.com/gocraft/web"
@@ -17,28 +18,32 @@ import (
 
 // Server implements an HTTP server which exposes a JSON API to view and manage gocraft/work items.
 type Server struct {
-	namespace    string
-	redisAdapter redis.Redis
-	client       *work.Client
-	hostPort     string
-	server       *manners.GracefulServer
-	wg           sync.WaitGroup
-	router       *web.Router
+	namespace string
+	client    *work.Client
+	hostPort  string
+	server    *manners.GracefulServer
+	wg        sync.WaitGroup
+	router    *web.Router
 }
 
 type webContext struct {
 	*Server
 }
 
-// NewServer creates and returns a new server. The 'namespace' param is the redis namespace to use. The hostPort param is the address to bind on to expose the API.
+// NewServer creates and returns a new server. The 'namespace' param is the redis namespace to use.
+// The hostPort param is the address to bind on to expose the API.
 func NewServer(namespace string, redisAdapter redis.Redis, hostPort string) *Server {
 	router := web.New(webContext{})
 	server := &Server{
 		namespace: namespace,
 		client:    work.NewClient(namespace, redisAdapter),
 		hostPort:  hostPort,
-		server:    manners.NewWithServer(&http.Server{Addr: hostPort, Handler: router}),
-		router:    router,
+		server: manners.NewWithServer(&http.Server{
+			Addr:              hostPort,
+			Handler:           router,
+			ReadHeaderTimeout: 2 * time.Second,
+		}),
+		router: router,
 	}
 
 	router.Middleware(func(c *webContext, rw web.ResponseWriter, r *web.Request, next web.NextMiddlewareFunc) {
@@ -64,13 +69,13 @@ func NewServer(namespace string, redisAdapter redis.Redis, hostPort string) *Ser
 	// Build the HTML page:
 	//
 	assetRouter := router.Subrouter(webContext{}, "")
-	assetRouter.Get("/", func(c *webContext, rw web.ResponseWriter, req *web.Request) {
+	assetRouter.Get("/", func(_ *webContext, rw web.ResponseWriter, _ *web.Request) {
 		rw.Header().Set("Content-Type", "text/html; charset=utf-8")
-		rw.Write(assets.MustAsset("index.html"))
+		_, _ = rw.Write(assets.MustAsset("index.html")) // TODO: log error
 	})
-	assetRouter.Get("/work.js", func(c *webContext, rw web.ResponseWriter, req *web.Request) {
+	assetRouter.Get("/work.js", func(_ *webContext, rw web.ResponseWriter, _ *web.Request) {
 		rw.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-		rw.Write(assets.MustAsset("work.js"))
+		_, _ = rw.Write(assets.MustAsset("work.js")) // TODO: log error
 	})
 
 	return server
@@ -80,7 +85,7 @@ func NewServer(namespace string, redisAdapter redis.Redis, hostPort string) *Ser
 func (w *Server) Start() {
 	w.wg.Add(1)
 	go func(w *Server) {
-		w.server.ListenAndServe()
+		_ = w.server.ListenAndServe() // TODO: log error
 		w.wg.Done()
 	}(w)
 }
@@ -91,17 +96,17 @@ func (w *Server) Stop() {
 	w.wg.Wait()
 }
 
-func (c *webContext) queues(rw web.ResponseWriter, r *web.Request) {
+func (c *webContext) queues(rw web.ResponseWriter, _ *web.Request) {
 	response, err := c.client.Queues()
 	render(rw, response, err)
 }
 
-func (c *webContext) workerPools(rw web.ResponseWriter, r *web.Request) {
+func (c *webContext) workerPools(rw web.ResponseWriter, _ *web.Request) {
 	response, err := c.client.WorkerPoolHeartbeats()
 	render(rw, response, err)
 }
 
-func (c *webContext) busyWorkers(rw web.ResponseWriter, r *web.Request) {
+func (c *webContext) busyWorkers(rw web.ResponseWriter, _ *web.Request) {
 	observations, err := c.client.WorkerObservations()
 	if err != nil {
 		renderError(rw, err)
@@ -205,12 +210,12 @@ func (c *webContext) retryDeadJob(rw web.ResponseWriter, r *web.Request) {
 	render(rw, map[string]string{"status": "ok"}, err)
 }
 
-func (c *webContext) deleteAllDeadJobs(rw web.ResponseWriter, r *web.Request) {
+func (c *webContext) deleteAllDeadJobs(rw web.ResponseWriter, _ *web.Request) {
 	err := c.client.DeleteAllDeadJobs()
 	render(rw, map[string]string{"status": "ok"}, err)
 }
 
-func (c *webContext) retryAllDeadJobs(rw web.ResponseWriter, r *web.Request) {
+func (c *webContext) retryAllDeadJobs(rw web.ResponseWriter, _ *web.Request) {
 	err := c.client.RetryAllDeadJobs()
 	render(rw, map[string]string{"status": "ok"}, err)
 }
@@ -226,7 +231,7 @@ func render(rw web.ResponseWriter, jsonable interface{}, err error) {
 		renderError(rw, err)
 		return
 	}
-	rw.Write(jsonData)
+	_, _ = rw.Write(jsonData) // TODO: log error
 }
 
 func renderError(rw http.ResponseWriter, err error) {
@@ -237,7 +242,7 @@ func renderError(rw http.ResponseWriter, err error) {
 func parsePage(r *web.Request) (uint, error) {
 	err := r.ParseForm()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("parse form: %w", err)
 	}
 
 	pageStr := r.Form.Get("page")

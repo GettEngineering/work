@@ -21,7 +21,7 @@ import (
 	redigoadapter "github.com/GettEngineering/work/redis/adapters/redigo"
 )
 
-func TestWebUIStartStop(t *testing.T) {
+func TestWebUIStartStop(_ *testing.T) {
 	ctx := context.Background()
 	redisAdapter := newTestRedis(":6379")
 	ns := "work"
@@ -30,6 +30,8 @@ func TestWebUIStartStop(t *testing.T) {
 	s := NewServer(ns, redisAdapter, ":6666")
 	s.Start()
 	s.Stop()
+
+	// TODO: something should be tested here
 }
 
 type TestContext struct{}
@@ -44,19 +46,21 @@ func TestWebUIQueues(t *testing.T) {
 	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
 	assert.NoError(t, err)
-	enqueuer.Enqueue("foo", nil)
-	enqueuer.Enqueue("zaz", nil)
+	_, err = enqueuer.Enqueue("foo", nil)
+	assert.NoError(t, err)
+	_, err = enqueuer.Enqueue("zaz", nil)
+	assert.NoError(t, err)
 
 	// Start a pool to work on it. It's going to work on the queues
 	// side effect of that is knowing which jobs are avail
 	wp := work.NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(job *work.Job) error {
+	wp.Job("wat", func(_ *work.Job) error {
 		return nil
 	})
-	wp.Job("foo", func(job *work.Job) error {
+	wp.Job("foo", func(_ *work.Job) error {
 		return nil
 	})
-	wp.Job("zaz", func(job *work.Job) error {
+	wp.Job("zaz", func(_ *work.Job) error {
 		return nil
 	})
 	wp.Start()
@@ -64,17 +68,23 @@ func TestWebUIQueues(t *testing.T) {
 	wp.Stop()
 
 	// Now that we have the jobs, populate some queues
-	enqueuer.Enqueue("wat", nil)
-	enqueuer.Enqueue("wat", nil)
-	enqueuer.Enqueue("wat", nil)
-	enqueuer.Enqueue("foo", nil)
-	enqueuer.Enqueue("foo", nil)
-	enqueuer.Enqueue("zaz", nil)
+	_, err = enqueuer.Enqueue("wat", nil)
+	assert.NoError(t, err)
+	_, err = enqueuer.Enqueue("wat", nil)
+	assert.NoError(t, err)
+	_, err = enqueuer.Enqueue("wat", nil)
+	assert.NoError(t, err)
+	_, err = enqueuer.Enqueue("foo", nil)
+	assert.NoError(t, err)
+	_, err = enqueuer.Enqueue("foo", nil)
+	assert.NoError(t, err)
+	_, err = enqueuer.Enqueue("zaz", nil)
+	assert.NoError(t, err)
 
 	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
-	request, _ := http.NewRequest("GET", "/queues", nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", "/queues", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 
@@ -98,14 +108,14 @@ func TestWebUIWorkerPools(t *testing.T) {
 	cleanKeyspace(ctx, redisAdapter, ns)
 
 	wp := work.NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(job *work.Job) error { return nil })
-	wp.Job("bob", func(job *work.Job) error { return nil })
+	wp.Job("wat", func(_ *work.Job) error { return nil })
+	wp.Job("bob", func(_ *work.Job) error { return nil })
 	wp.Start()
 	defer wp.Stop()
 
 	wp2 := work.NewWorkerPool(TestContext{}, 11, ns, redisAdapter)
-	wp2.Job("foo", func(job *work.Job) error { return nil })
-	wp2.Job("bar", func(job *work.Job) error { return nil })
+	wp2.Job("foo", func(_ *work.Job) error { return nil })
+	wp2.Job("bar", func(_ *work.Job) error { return nil })
 	wp2.Start()
 	defer wp2.Stop()
 
@@ -114,7 +124,7 @@ func TestWebUIWorkerPools(t *testing.T) {
 	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
-	request, _ := http.NewRequest("GET", "/worker_pools", nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", "/worker_pools", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 
@@ -142,7 +152,7 @@ func TestWebUIBusyWorkers(t *testing.T) {
 	wgroup2.Add(1)
 
 	wp := work.NewWorkerPool(TestContext{}, 10, ns, redisAdapter)
-	wp.Job("wat", func(job *work.Job) error {
+	wp.Job("wat", func(_ *work.Job) error {
 		wgroup2.Done()
 		wgroup.Wait()
 		return nil
@@ -159,7 +169,7 @@ func TestWebUIBusyWorkers(t *testing.T) {
 	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
-	request, _ := http.NewRequest("GET", "/busy_workers", nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", "/busy_workers", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 
@@ -172,12 +182,13 @@ func TestWebUIBusyWorkers(t *testing.T) {
 
 	// Ok, now let's make a busy worker
 	enqueuer := work.NewEnqueuer(ns, redisAdapter)
-	enqueuer.Enqueue("wat", nil)
+	_, err = enqueuer.Enqueue("wat", nil)
+	assert.NoError(t, err)
 	wgroup2.Wait()
 	time.Sleep(5 * time.Millisecond) // need to let obsever process
 
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("GET", "/busy_workers", nil)
+	request, _ = http.NewRequestWithContext(ctx, "GET", "/busy_workers", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	wgroup.Done()
 	assert.Equal(t, 200, recorder.Code)
@@ -204,7 +215,7 @@ func TestWebUIRetryJobs(t *testing.T) {
 	assert.Nil(t, err)
 
 	wp := work.NewWorkerPool(TestContext{}, 2, ns, redisAdapter)
-	wp.Job("wat", func(job *work.Job) error {
+	wp.Job("wat", func(_ *work.Job) error {
 		return fmt.Errorf("ohno")
 	})
 	wp.Start()
@@ -214,7 +225,7 @@ func TestWebUIRetryJobs(t *testing.T) {
 	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
-	request, _ := http.NewRequest("GET", "/retry_jobs", nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", "/retry_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	var res struct {
@@ -250,7 +261,7 @@ func TestWebUIScheduledJobs(t *testing.T) {
 	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
-	request, _ := http.NewRequest("GET", "/scheduled_jobs", nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", "/scheduled_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	var res struct {
@@ -279,11 +290,12 @@ func TestWebUIDeadJobs(t *testing.T) {
 
 	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
+	assert.NoError(t, err)
 	_, err = enqueuer.Enqueue("wat", nil)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	wp := work.NewWorkerPool(TestContext{}, 2, ns, redisAdapter)
-	wp.JobWithOptions("wat", work.JobOptions{Priority: 1, MaxFails: 1}, func(job *work.Job) error {
+	wp.JobWithOptions("wat", work.JobOptions{Priority: 1, MaxFails: 1}, func(_ *work.Job) error {
 		return fmt.Errorf("ohno")
 	})
 	wp.Start()
@@ -293,7 +305,7 @@ func TestWebUIDeadJobs(t *testing.T) {
 	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
-	request, _ := http.NewRequest("GET", "/dead_jobs", nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", "/dead_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	var res struct {
@@ -325,18 +337,18 @@ func TestWebUIDeadJobs(t *testing.T) {
 
 	// Ok, now let's retry one and delete one.
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("POST", fmt.Sprintf("/delete_dead_job/%d/%s", diedAt0, id0), nil)
+	request, _ = http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("/delete_dead_job/%d/%s", diedAt0, id0), http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("POST", fmt.Sprintf("/retry_dead_job/%d/%s", diedAt1, id1), nil)
+	request, _ = http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("/retry_dead_job/%d/%s", diedAt1, id1), http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 
 	// Make sure dead queue is empty
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("GET", "/dead_jobs", nil)
+	request, _ = http.NewRequestWithContext(ctx, "GET", "/dead_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	err = json.Unmarshal(recorder.Body.Bytes(), &res)
@@ -345,7 +357,7 @@ func TestWebUIDeadJobs(t *testing.T) {
 
 	// Make sure the "wat" queue has 1 item in it
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("GET", "/queues", nil)
+	request, _ = http.NewRequestWithContext(ctx, "GET", "/queues", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	var queueRes []struct {
@@ -368,11 +380,12 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 
 	enqueuer := work.NewEnqueuer(ns, redisAdapter)
 	_, err := enqueuer.Enqueue("wat", nil)
+	assert.NoError(t, err)
 	_, err = enqueuer.Enqueue("wat", nil)
-	assert.Nil(t, err)
+	assert.NoError(t, err)
 
 	wp := work.NewWorkerPool(TestContext{}, 2, ns, redisAdapter)
-	wp.JobWithOptions("wat", work.JobOptions{Priority: 1, MaxFails: 1}, func(job *work.Job) error {
+	wp.JobWithOptions("wat", work.JobOptions{Priority: 1, MaxFails: 1}, func(_ *work.Job) error {
 		return fmt.Errorf("ohno")
 	})
 	wp.Start()
@@ -382,7 +395,7 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
-	request, _ := http.NewRequest("GET", "/dead_jobs", nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", "/dead_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	var res struct {
@@ -402,13 +415,13 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 
 	// Ok, now let's retry all
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("POST", "/retry_all_dead_jobs", nil)
+	request, _ = http.NewRequestWithContext(ctx, "POST", "/retry_all_dead_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 
 	// Make sure dead queue is empty
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("GET", "/dead_jobs", nil)
+	request, _ = http.NewRequestWithContext(ctx, "GET", "/dead_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	err = json.Unmarshal(recorder.Body.Bytes(), &res)
@@ -417,7 +430,7 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 
 	// Make sure the "wat" queue has 2 items in it
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("GET", "/queues", nil)
+	request, _ = http.NewRequestWithContext(ctx, "GET", "/queues", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	var queueRes []struct {
@@ -439,7 +452,7 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 
 	// Make sure we have 2 dead things again:
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("GET", "/dead_jobs", nil)
+	request, _ = http.NewRequestWithContext(ctx, "GET", "/dead_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	err = json.Unmarshal(recorder.Body.Bytes(), &res)
@@ -448,13 +461,13 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 
 	// Now delete them:
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("POST", "/delete_all_dead_jobs", nil)
+	request, _ = http.NewRequestWithContext(ctx, "POST", "/delete_all_dead_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 
 	// Make sure dead queue is empty
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("GET", "/dead_jobs", nil)
+	request, _ = http.NewRequestWithContext(ctx, "GET", "/dead_jobs", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 	assert.Equal(t, 200, recorder.Code)
 	err = json.Unmarshal(recorder.Body.Bytes(), &res)
@@ -463,18 +476,19 @@ func TestWebUIDeadJobsDeleteRetryAll(t *testing.T) {
 }
 
 func TestWebUIAssets(t *testing.T) {
+	ctx := context.Background()
 	redisAdapter := newTestRedis(":6379")
 	ns := "testwork"
 	s := NewServer(ns, redisAdapter, ":6666")
 
 	recorder := httptest.NewRecorder()
-	request, _ := http.NewRequest("GET", "/", nil)
+	request, _ := http.NewRequestWithContext(ctx, "GET", "/", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
-	body := string(recorder.Body.Bytes())
+	body := recorder.Body.String()
 	assert.Regexp(t, "html", body)
 
 	recorder = httptest.NewRecorder()
-	request, _ = http.NewRequest("GET", "/work.js", nil)
+	request, _ = http.NewRequestWithContext(ctx, "GET", "/work.js", http.NoBody)
 	s.router.ServeHTTP(recorder, request)
 }
 
@@ -486,9 +500,7 @@ func newTestRedis(addr string) workredis.Redis {
 			Password: "",
 			DB:       0,
 		})
-		return goredisv8adapter.NewGoredisAdapter(rdb)
-	case "redigo":
-		fallthrough
+		return goredisv8adapter.NewAdapter(rdb)
 	default:
 		pool := &redis.Pool{
 			MaxActive:   3,
@@ -499,7 +511,7 @@ func newTestRedis(addr string) workredis.Redis {
 			},
 			Wait: true,
 		}
-		return redigoadapter.NewRedigoAdapter(pool)
+		return redigoadapter.NewAdapter(pool)
 	}
 }
 

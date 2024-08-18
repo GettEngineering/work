@@ -10,7 +10,7 @@ import (
 func redisNamespacePrefix(namespace string) string {
 	l := len(namespace)
 	if (l > 0) && (namespace[l-1] != ':') {
-		namespace = namespace + ":"
+		namespace += ":"
 	}
 	return namespace
 }
@@ -20,8 +20,8 @@ func redisKeyKnownJobs(namespace string) string {
 	return redisNamespacePrefix(namespace) + "known_jobs"
 }
 
-// returns "<namespace>:jobs:"
-// so that we can just append the job name and be good to go
+// redisKeyJobsPrefix returns "<namespace>:jobs:".
+// So that we can just append the job name and be good to go.
 func redisKeyJobsPrefix(namespace string) string {
 	return redisNamespacePrefix(namespace) + "jobs:"
 }
@@ -99,7 +99,7 @@ func redisKeyUniqueJob(namespace, jobName string, args map[string]interface{}) (
 	if args != nil {
 		err := json.NewEncoder(&buf).Encode(args)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("encode args: %w", err)
 		}
 	}
 
@@ -111,16 +111,15 @@ func redisKeyLastPeriodicEnqueue(namespace string) string {
 	return redisNamespacePrefix(namespace) + "last_periodic_enqueue"
 }
 
-// Used to fetch the next job to run
-//
-// KEYS[1] = the 1st job queue we want to try, eg, "work:jobs:emails"
-// KEYS[2] = the 1st job queue's in prog queue, eg, "work:jobs:emails:97c84119d13cb54119a38743:inprogress"
-// KEYS[3] = the 2nd job queue...
-// KEYS[4] = the 2nd job queue's in prog queue...
-// ...
-// KEYS[N] = the last job queue...
-// KEYS[N+1] = the last job queue's in prog queue...
-// ARGV[1] = job queue's workerPoolID
+// Used to fetch the next job to run.
+//   - KEYS[1] = the 1st job queue we want to try, eg, "work:jobs:emails"
+//   - KEYS[2] = the 1st job queue's in prog queue, eg, "work:jobs:emails:97c84119d13cb54119a38743:inprogress"
+//   - KEYS[3] = the 2nd job queue...
+//   - KEYS[4] = the 2nd job queue's in prog queue...
+//   - ...
+//   - KEYS[N] = the last job queue...
+//   - KEYS[N+1] = the last job queue's in prog queue...
+//   - ARGV[1] = job queue's workerPoolID
 var redisLuaFetchJob = fmt.Sprintf(`
 local function acquireLock(lockKey, lockInfoKey, workerPoolID)
   redis.call('incr', lockKey)
@@ -170,16 +169,15 @@ for i=1,keylen,%d do
 end
 return nil`, fetchKeysPerJobType)
 
-// Used by the reaper to re-enqueue jobs that were in progress
-//
-// KEYS[1] = the 1st job's in progress queue
-// KEYS[2] = the 1st job's job queue
-// KEYS[3] = the 2nd job's in progress queue
-// KEYS[4] = the 2nd job's job queue
-// ...
-// KEYS[N] = the last job's in progress queue
-// KEYS[N+1] = the last job's job queue
-// ARGV[1] = workerPoolID for job queue
+// Used by the reaper to re-enqueue jobs that were in progress.
+//   - KEYS[1] = the 1st job's in progress queue
+//   - KEYS[2] = the 1st job's job queue
+//   - KEYS[3] = the 2nd job's in progress queue
+//   - KEYS[4] = the 2nd job's job queue
+//   - ...
+//   - KEYS[N] = the last job's in progress queue
+//   - KEYS[N+1] = the last job's job queue
+//   - ARGV[1] = workerPoolID for job queue
 var redisLuaReenqueueJob = fmt.Sprintf(`
 local function releaseLock(lockKey, lockInfoKey, workerPoolID)
   redis.call('decr', lockKey)
@@ -203,16 +201,15 @@ for i=1,keylen,%d do
 end
 return nil`, requeueKeysPerJob)
 
-// Used by the reaper to clean up stale locks
-//
-// KEYS[1] = the 1st job's lock
-// KEYS[2] = the 1st job's lock info hash
-// KEYS[3] = the 2nd job's lock
-// KEYS[4] = the 2nd job's lock info hash
-// ...
-// KEYS[N] = the last job's lock
-// KEYS[N+1] = the last job's lock info haash
-// ARGV[1] = the dead worker pool id
+// Used by the reaper to clean up stale locks.
+//   - KEYS[1] = the 1st job's lock
+//   - KEYS[2] = the 1st job's lock info hash
+//   - KEYS[3] = the 2nd job's lock
+//   - KEYS[4] = the 2nd job's lock info hash
+//   - ...
+//   - KEYS[N] = the last job's lock
+//   - KEYS[N+1] = the last job's lock info haash
+//   - ARGV[1] = the dead worker pool id
 var redisLuaReapStaleLocks = `
 local keylen = #KEYS
 local lock, lockInfo, deadLockCount
@@ -231,11 +228,12 @@ end
 return nil
 `
 
-// KEYS[1] = zset of jobs (retry or scheduled), eg work:retry
-// KEYS[2] = zset of dead, eg work:dead. If we don't know the jobName of a job, we'll put it in dead.
-// KEYS[3...] = known job queues, eg ["work:jobs:create_watch", "work:jobs:send_email", ...]
-// ARGV[1] = jobs prefix, eg, "work:jobs:". We'll take that and append the job name from the JSON object in order to queue up a job
-// ARGV[2] = current time in epoch seconds
+// Used by the requeuer.
+//   - KEYS[1] = zset of jobs (retry or scheduled), eg work:retry
+//   - KEYS[2] = zset of dead, eg work:dead. If we don't know the jobName of a job, we'll put it in dead.
+//   - KEYS[3...] = known job queues, eg ["work:jobs:create_watch", "work:jobs:send_email", ...]
+//   - ARGV[1] = jobs prefix, eg, "work:jobs:". We'll take that and append the job name from the JSON object in order to queue up a job
+//   - ARGV[2] = current time in epoch seconds
 var redisLuaZremLpushCmd = `
 local res, j, queue
 res = redis.call('zrangebyscore', KEYS[1], '-inf', ARGV[2], 'LIMIT', 0, 1)
@@ -258,12 +256,14 @@ end
 return nil
 `
 
-// KEYS[1] = zset of (dead|scheduled|retry), eg, work:dead
-// ARGV[1] = died at. The z rank of the job.
-// ARGV[2] = job ID to requeue
+// Used by the client.
+//   - KEYS[1] = zset of (dead|scheduled|retry), eg, work:dead
+//   - ARGV[1] = died at. The z rank of the job.
+//   - ARGV[2] = job ID to requeue
+//
 // Returns:
-// - number of jobs deleted (typically 1 or 0)
-// - job bytes (last job only)
+//   - number of jobs deleted (typically 1 or 0)
+//   - job bytes (last job only)
 var redisLuaDeleteSingleCmd = `
 local jobs, i, j, deletedCount, jobBytes
 jobs = redis.call('zrangebyscore', KEYS[1], ARGV[1], ARGV[1])
@@ -281,13 +281,15 @@ end
 return {deletedCount, jobBytes}
 `
 
-// KEYS[1] = zset of dead jobs, eg, work:dead
-// KEYS[2...] = known job queues, eg ["work:jobs:create_watch", "work:jobs:send_email", ...]
-// ARGV[1] = jobs prefix, eg, "work:jobs:". We'll take that and append the job name from the JSON object in order to queue up a job
-// ARGV[2] = current time in epoch seconds
-// ARGV[3] = died at. The z rank of the job.
-// ARGV[4] = job ID to requeue
-// Returns: number of jobs requeued (typically 1 or 0)
+// Used by the client.
+//   - KEYS[1] = zset of dead jobs, eg, work:dead
+//   - KEYS[2...] = known job queues, eg ["work:jobs:create_watch", "work:jobs:send_email", ...]
+//   - ARGV[1] = jobs prefix, eg, "work:jobs:". We'll take that and append the job name from the JSON object in order to queue up a job
+//   - ARGV[2] = current time in epoch seconds
+//   - ARGV[3] = died at. The z rank of the job.
+//   - ARGV[4] = job ID to requeue
+//
+// Returns number of jobs requeued (typically 1 or 0).
 var redisLuaRequeueSingleDeadCmd = `
 local jobs, i, j, queue, found, requeuedCount
 jobs = redis.call('zrangebyscore', KEYS[1], ARGV[3], ARGV[3])
@@ -321,12 +323,14 @@ end
 return requeuedCount
 `
 
-// KEYS[1] = zset of dead jobs, eg work:dead
-// KEYS[2...] = known job queues, eg ["work:jobs:create_watch", "work:jobs:send_email", ...]
-// ARGV[1] = jobs prefix, eg, "work:jobs:". We'll take that and append the job name from the JSON object in order to queue up a job
-// ARGV[2] = current time in epoch seconds
-// ARGV[3] = max number of jobs to requeue
-// Returns: number of jobs requeued
+// Used by the client.
+//   - KEYS[1] = zset of dead jobs, eg work:dead
+//   - KEYS[2...] = known job queues, eg ["work:jobs:create_watch", "work:jobs:send_email", ...]
+//   - ARGV[1] = jobs prefix, eg, "work:jobs:". We'll take that and append the job name from the JSON object in order to queue up a job
+//   - ARGV[2] = current time in epoch seconds
+//   - ARGV[3] = max number of jobs to requeue
+//
+// Returns number of jobs requeued.
 var redisLuaRequeueAllDeadCmd = `
 local jobs, i, j, queue, found, requeuedCount
 jobs = redis.call('zrangebyscore', KEYS[1], '-inf', ARGV[2], 'LIMIT', 0, ARGV[3])
@@ -358,10 +362,11 @@ end
 return requeuedCount
 `
 
-// KEYS[1] = job queue to push onto
-// KEYS[2] = Unique job's key. Test for existence and set if we push.
-// ARGV[1] = job
-// ARGV[2] = updated job or just a 1 if arguments don't update
+// Used by the enqueuer to enqueue a job.
+//   - KEYS[1] = job queue to push onto
+//   - KEYS[2] = Unique job's key. Test for existence and set if we push.
+//   - ARGV[1] = job
+//   - ARGV[2] = updated job or just a 1 if arguments don't update
 var redisLuaEnqueueUnique = `
 if redis.call('set', KEYS[2], ARGV[2], 'NX', 'EX', '86400') then
   redis.call('lpush', KEYS[1], ARGV[1])
@@ -372,11 +377,12 @@ end
 return 'dup'
 `
 
-// KEYS[1] = scheduled job queue
-// KEYS[2] = Unique job's key. Test for existence and set if we push.
-// ARGV[1] = job
-// ARGV[2] = updated job or just a 1 if arguments don't update
-// ARGV[3] = epoch seconds for job to be run at
+// Used by the enqueuer to enqueue a scheduled job.
+//   - KEYS[1] = scheduled job queue
+//   - KEYS[2] = Unique job's key. Test for existence and set if we push.
+//   - ARGV[1] = job
+//   - ARGV[2] = updated job or just a 1 if arguments don't update
+//   - ARGV[3] = epoch seconds for job to be run at
 var redisLuaEnqueueUniqueIn = `
 if redis.call('set', KEYS[2], ARGV[2], 'NX', 'EX', '86400') then
   redis.call('zadd', KEYS[1], ARGV[3], ARGV[1])

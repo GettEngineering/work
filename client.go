@@ -32,7 +32,8 @@ func NewClient(namespace string, redisAdapter redis.Redis) *Client {
 	}
 }
 
-// WorkerPoolHeartbeat represents the heartbeat from a worker pool. WorkerPool's write a heartbeat every 5 seconds so we know they're alive and includes config information.
+// WorkerPoolHeartbeat represents the heartbeat from a worker pool.
+// WorkerPool's write a heartbeat every 5 seconds so we know they're alive and includes config information.
 type WorkerPoolHeartbeat struct {
 	WorkerPoolID string   `json:"worker_pool_id"`
 	StartedAt    int64    `json:"started_at"`
@@ -44,7 +45,8 @@ type WorkerPoolHeartbeat struct {
 	WorkerIDs    []string `json:"worker_ids"`
 }
 
-// WorkerPoolHeartbeats queries Redis and returns all WorkerPoolHeartbeat's it finds (even for those worker pools which don't have a current heartbeat).
+// WorkerPoolHeartbeats queries Redis and returns all WorkerPoolHeartbeat's it finds (even for those
+// worker pools which don't have a current heartbeat).
 func (c *Client) WorkerPoolHeartbeats() ([]*WorkerPoolHeartbeat, error) {
 	ctx := context.TODO()
 
@@ -52,7 +54,7 @@ func (c *Client) WorkerPoolHeartbeats() ([]*WorkerPoolHeartbeat, error) {
 
 	workerPoolIDs, err := c.redisAdapter.SMembers(ctx, workerPoolsKey)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("SMEMBERS of %s: %w", workerPoolsKey, err)
 	}
 	sort.Strings(workerPoolIDs)
 
@@ -68,7 +70,7 @@ func (c *Client) WorkerPoolHeartbeats() ([]*WorkerPoolHeartbeat, error) {
 	})
 	if err != nil {
 		logError("worker_pool_statuses.get_heartbeats", err)
-		return nil, err
+		return nil, fmt.Errorf("query heartbeats: %w", err)
 	}
 
 	heartbeats := make([]*WorkerPoolHeartbeat, 0, len(workerPoolIDs))
@@ -81,11 +83,12 @@ func (c *Client) WorkerPoolHeartbeats() ([]*WorkerPoolHeartbeat, error) {
 		res, err := replies[i].Result()
 		if err != nil {
 			logError("worker_pool_statuses.result", err)
-			return nil, err
+			return nil, fmt.Errorf("get worker pool's heartbeat: %w", err)
 		}
 
 		for key, value := range res {
 			var err error
+
 			switch key {
 			case "heartbeat_at":
 				heartbeat.HeartbeatAt, err = strconv.ParseInt(value, 10, 64)
@@ -110,7 +113,7 @@ func (c *Client) WorkerPoolHeartbeats() ([]*WorkerPoolHeartbeat, error) {
 			}
 			if err != nil {
 				logError("worker_pool_statuses.parse", err)
-				return nil, err
+				return nil, fmt.Errorf("parse heartbeat: %w", err)
 			}
 		}
 
@@ -120,7 +123,8 @@ func (c *Client) WorkerPoolHeartbeats() ([]*WorkerPoolHeartbeat, error) {
 	return heartbeats, nil
 }
 
-// WorkerObservation represents the latest observation taken from a worker. The observation indicates whether the worker is busy processing a job, and if so, information about that job.
+// WorkerObservation represents the latest observation taken from a worker.
+// The observation indicates whether the worker is busy processing a job, and if so, information about that job.
 type WorkerObservation struct {
 	WorkerID string `json:"worker_id"`
 	IsBusy   bool   `json:"is_busy"`
@@ -161,7 +165,7 @@ func (c *Client) WorkerObservations() ([]*WorkerObservation, error) {
 	})
 	if err != nil {
 		logError("worker_observations.get_observations", err)
-		return nil, err
+		return nil, fmt.Errorf("query worker observations: %w", err)
 	}
 
 	observations := make([]*WorkerObservation, 0, len(workerIDs))
@@ -174,7 +178,7 @@ func (c *Client) WorkerObservations() ([]*WorkerObservation, error) {
 		res, err := replies[i].Result()
 		if err != nil {
 			logError("worker_observations.result", err)
-			return nil, err
+			return nil, fmt.Errorf("get worker observation: %w", err)
 		}
 
 		for key, value := range res {
@@ -198,7 +202,7 @@ func (c *Client) WorkerObservations() ([]*WorkerObservation, error) {
 			}
 			if err != nil {
 				logError("worker_observations.parse", err)
-				return nil, err
+				return nil, fmt.Errorf("parse worker observation: %w", err)
 			}
 		}
 
@@ -208,7 +212,9 @@ func (c *Client) WorkerObservations() ([]*WorkerObservation, error) {
 	return observations, nil
 }
 
-// Queue represents a queue that holds jobs with the same name. It indicates their name, count, and latency (in seconds). Latency is a measurement of how long ago the next job to be processed was enqueued.
+// Queue represents a queue that holds jobs with the same name.
+// It indicates their name, count, and latency (in seconds).
+// Latency is a measurement of how long ago the next job to be processed was enqueued.
 type Queue struct {
 	JobName string `json:"job_name"`
 	Count   int64  `json:"count"`
@@ -221,9 +227,10 @@ func (c *Client) Queues() ([]*Queue, error) {
 
 	// Get all known job names.
 	key := redisKeyKnownJobs(c.namespace)
+
 	jobNames, err := c.redisAdapter.SMembers(ctx, key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("SMEMBERS of %s: %w", key, err)
 	}
 	sort.Strings(jobNames)
 
@@ -241,8 +248,8 @@ func (c *Client) Queues() ([]*Queue, error) {
 		return nil
 	})
 	if err != nil {
-		logError("client.queues.jobs_lenghts", err)
-		return nil, err
+		logError("client.queues.jobs_lengths", err)
+		return nil, fmt.Errorf("query job lengths: %w", err)
 	}
 
 	queues := make([]*Queue, 0, len(jobNames))
@@ -250,8 +257,8 @@ func (c *Client) Queues() ([]*Queue, error) {
 	for i, jobName := range jobNames {
 		count, err := llenReplies[i].Result()
 		if err != nil {
-			logError("client.queues.lenght_result", err)
-			return nil, err
+			logError("client.queues.length_result", err)
+			return nil, fmt.Errorf("get job length: %w", err)
 		}
 
 		queue := &Queue{
@@ -279,28 +286,30 @@ func (c *Client) Queues() ([]*Queue, error) {
 	})
 	if err != nil {
 		logError("client.queues.last_jobs", err)
-		return nil, err
+		return nil, fmt.Errorf("query last jobs: %w", err)
 	}
 
 	now := nowEpochSeconds()
 	j := 0
 
 	for _, s := range queues {
-		if s.Count > 0 {
-			b, err := lindexReplies[j].Bytes()
-			if err != nil {
-				logError("client.queues.last_job_result", err)
-				return nil, err
-			}
-
-			j++
-
-			job, err := newJob(b, nil, nil)
-			if err != nil {
-				logError("client.queues.new_job", err)
-			}
-			s.Latency = now - job.EnqueuedAt
+		if s.Count <= 0 {
+			continue
 		}
+
+		b, err := lindexReplies[j].Bytes()
+		if err != nil {
+			logError("client.queues.last_job_result", err)
+			return nil, fmt.Errorf("get last job: %w", err)
+		}
+
+		j++
+
+		job, err := newJob(b, nil, nil)
+		if err != nil {
+			logError("client.queues.new_job", err)
+		}
+		s.Latency = now - job.EnqueuedAt
 	}
 
 	return queues, nil
@@ -324,10 +333,12 @@ type DeadJob struct {
 	*Job
 }
 
-// ScheduledJobs returns a list of ScheduledJob's. The page param is 1-based; each page is 20 items. The total number of items (not pages) in the list of scheduled jobs is also returned.
+// ScheduledJobs returns a list of ScheduledJob's. The page param is 1-based; each page is 20 items.
+// The total number of items (not pages) in the list of scheduled jobs is also returned.
 func (c *Client) ScheduledJobs(page uint) ([]*ScheduledJob, int64, error) {
 	ctx := context.TODO()
 	key := redisKeyScheduled(c.namespace)
+
 	jobsWithScores, count, err := c.getZsetPage(ctx, key, page)
 	if err != nil {
 		logError("client.scheduled_jobs.get_zset_page", err)
@@ -343,10 +354,12 @@ func (c *Client) ScheduledJobs(page uint) ([]*ScheduledJob, int64, error) {
 	return jobs, count, nil
 }
 
-// RetryJobs returns a list of RetryJob's. The page param is 1-based; each page is 20 items. The total number of items (not pages) in the list of retry jobs is also returned.
+// RetryJobs returns a list of RetryJob's. The page param is 1-based; each page is 20 items.
+// The total number of items (not pages) in the list of retry jobs is also returned.
 func (c *Client) RetryJobs(page uint) ([]*RetryJob, int64, error) {
 	ctx := context.TODO()
 	key := redisKeyRetry(c.namespace)
+
 	jobsWithScores, count, err := c.getZsetPage(ctx, key, page)
 	if err != nil {
 		logError("client.retry_jobs.get_zset_page", err)
@@ -362,10 +375,12 @@ func (c *Client) RetryJobs(page uint) ([]*RetryJob, int64, error) {
 	return jobs, count, nil
 }
 
-// DeadJobs returns a list of DeadJob's. The page param is 1-based; each page is 20 items. The total number of items (not pages) in the list of dead jobs is also returned.
+// DeadJobs returns a list of DeadJob's. The page param is 1-based; each page is 20 items.
+// The total number of items (not pages) in the list of dead jobs is also returned.
 func (c *Client) DeadJobs(page uint) ([]*DeadJob, int64, error) {
 	ctx := context.TODO()
 	key := redisKeyDead(c.namespace)
+
 	jobsWithScores, count, err := c.getZsetPage(ctx, key, page)
 	if err != nil {
 		logError("client.dead_jobs.get_zset_page", err)
@@ -407,7 +422,7 @@ func (c *Client) RetryDeadJob(diedAt int64, jobID string) error {
 	}
 
 	// Extract job names
-	var jobNames []string
+	jobNames := make([]string, 0, len(queues))
 	for _, q := range queues {
 		jobNames = append(jobNames, q.JobName)
 	}
@@ -430,7 +445,7 @@ func (c *Client) RetryDeadJob(diedAt int64, jobID string) error {
 	cnt, err := script.Run(ctx, keys, args...).Int64()
 	if err != nil {
 		logError("client.retry_dead_job.do", err)
-		return err
+		return fmt.Errorf("run script: %w", err)
 	}
 
 	if cnt == 0 {
@@ -453,7 +468,7 @@ func (c *Client) RetryAllDeadJobs() error {
 	}
 
 	// Extract job names
-	var jobNames []string
+	jobNames := make([]string, 0, len(queues))
 	for _, q := range queues {
 		jobNames = append(jobNames, q.JobName)
 	}
@@ -478,7 +493,7 @@ func (c *Client) RetryAllDeadJobs() error {
 		res, err := script.Run(ctx, keys, args...).Int64()
 		if err != nil {
 			logError("client.retry_all_dead_jobs.do", err)
-			return err
+			return fmt.Errorf("run script: %w", err)
 		}
 
 		if res == 0 {
@@ -492,10 +507,11 @@ func (c *Client) RetryAllDeadJobs() error {
 // DeleteAllDeadJobs deletes all dead jobs.
 func (c *Client) DeleteAllDeadJobs() error {
 	ctx := context.TODO()
-	err := c.redisAdapter.Del(ctx, redisKeyDead(c.namespace))
-	if err != nil {
+
+	key := redisKeyDead(c.namespace)
+	if err := c.redisAdapter.Del(ctx, key); err != nil {
 		logError("client.delete_all_dead_jobs", err)
-		return err
+		return fmt.Errorf("DEL of %s: %w", key, err)
 	}
 
 	return nil
@@ -528,7 +544,7 @@ func (c *Client) DeleteScheduledJob(scheduledFor int64, jobID string) error {
 			err = c.redisAdapter.Del(ctx, uniqueKey)
 			if err != nil {
 				logError("worker.delete_unique_job.del", err)
-				return err
+				return fmt.Errorf("delete unique job key: %w", err)
 			}
 		}
 	}
@@ -557,7 +573,12 @@ func (c *Client) DeleteRetryJob(retryAt int64, jobID string) error {
 // zsetKey is like "work:dead" or "work:scheduled".
 // The function deletes all jobs with the given jobID with the specified zscore (there should only be one,
 // but in theory there could be bad data).
-func (c *Client) deleteZsetJob(ctx context.Context, zsetKey string, zscore int64, jobID string) (bool, []byte, error) {
+func (c *Client) deleteZsetJob(
+	ctx context.Context,
+	zsetKey string,
+	zscore int64,
+	jobID string,
+) (deleted bool, lastJob []byte, err error) {
 	script := c.redisAdapter.NewScript(redisLuaDeleteSingleCmd, 1)
 	keys := []string{zsetKey} // KEY[1]
 	args := []any{
@@ -568,7 +589,7 @@ func (c *Client) deleteZsetJob(ctx context.Context, zsetKey string, zscore int64
 	values, err := script.Run(ctx, keys, args...).Slice()
 	if err != nil {
 		logError("client.delete_zset_job.run", err)
-		return false, nil, err
+		return false, nil, fmt.Errorf("run script to delete jobs: %w", err)
 	}
 
 	if len(values) != 2 {
@@ -607,13 +628,14 @@ func (c *Client) getZsetPage(ctx context.Context, key string, page uint) ([]jobS
 	ranges, err := c.redisAdapter.ZRangeByScoreWithScores(ctx, key, "-inf", "+inf", int64((page-1)*20), 20)
 	if err != nil {
 		logError("client.get_zset_page.ranges", err)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("ZRANGE of %s: %w", key, err)
 	}
 
 	jobsWithScores := make([]jobScore, ranges.Len())
 
 	for i := 0; ranges.Next(); i++ {
 		member, score := ranges.Val()
+
 		v, ok := member.(string)
 		if !ok {
 			err = fmt.Errorf("expected string, got %T", member)
@@ -637,7 +659,7 @@ func (c *Client) getZsetPage(ctx context.Context, key string, page uint) ([]jobS
 	count, err := c.redisAdapter.ZCard(ctx, key)
 	if err != nil {
 		logError("client.get_zset_page.int64", err)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("get total count of jobs: %w", err)
 	}
 
 	return jobsWithScores, count, nil

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"reflect"
 	"time"
 
@@ -39,7 +39,6 @@ func newWorker(
 	poolID string,
 	redisAdapter redis.Redis,
 	contextType reflect.Type,
-	middleware []*middlewareHandler,
 	jobTypes map[string]*jobType,
 	sleepBackoffs []int64,
 ) *worker {
@@ -67,7 +66,7 @@ func newWorker(
 		doneDrainingChan: make(chan struct{}),
 	}
 
-	w.updateMiddlewareAndJobTypes(middleware, jobTypes)
+	w.updateMiddlewareAndJobTypes(nil, jobTypes)
 
 	return w
 }
@@ -111,8 +110,10 @@ func (w *worker) drain() {
 var sleepBackoffsInMilliseconds = []int64{0, 10, 100, 1000, 5000}
 
 func (w *worker) loop() {
-	var drained bool
-	var consequtiveNoJobs int64
+	var (
+		drained           bool
+		consequtiveNoJobs int64
+	)
 
 	ctx := context.TODO()
 
@@ -130,14 +131,16 @@ func (w *worker) loop() {
 			timer.Reset(0)
 		case <-timer.C:
 			job, err := w.fetchJob(ctx)
-			if err != nil {
+
+			switch {
+			case err != nil:
 				logError("worker.fetch", err)
 				timer.Reset(10 * time.Millisecond)
-			} else if job != nil {
+			case job != nil:
 				w.processJob(ctx, job)
 				consequtiveNoJobs = 0
 				timer.Reset(0)
-			} else {
+			default:
 				if drained {
 					w.doneDrainingChan <- struct{}{}
 					drained = false
@@ -226,7 +229,9 @@ func (w *worker) processJob(ctx context.Context, job *Job) {
 			job = updatedJob
 		}
 	}
+
 	var runErr error
+
 	jt := w.jobTypes[job.Name]
 	if jt == nil {
 		runErr = fmt.Errorf("stray job: no handler")
@@ -253,8 +258,10 @@ func (w *worker) processJob(ctx context.Context, job *Job) {
 }
 
 func (w *worker) getUniqueJob(ctx context.Context, job *Job) *Job {
-	var uniqueKey string
-	var err error
+	var (
+		uniqueKey string
+		err       error
+	)
 
 	if job.UniqueKey != "" {
 		uniqueKey = job.UniqueKey
@@ -286,6 +293,7 @@ func (w *worker) getUniqueJob(ctx context.Context, job *Job) *Job {
 		return nil
 	}
 
+	//nolint:lll // we need long lines here for readability
 	// This is a hack to fix the following problem.
 	// If a job is scheduled with a unique key (EnqueueUniqueInByKey), it's added in 2 places in redis:
 	// scheduled queue and under unique key.
@@ -300,8 +308,8 @@ func (w *worker) getUniqueJob(ctx context.Context, job *Job) *Job {
 	// from the inprocess queue.
 	//
 	// EnqueueUniqueInByKey -> scheduled queue -> (json body is modified) -> jobs queue -> inprocess queue -> (handle job) -> delete from inprocess queue
-	//                      -> unique key                                                                                     using rawJson from unique key
-	//
+	//                    \                                                                                                   using rawJson from unique key
+	//                      -> unique key
 	// NOTE: this field is used only to delete the job from the inprocess queue.
 	// job.rawJSON is the original json body of the job coming from jobs queue.
 	jobWithArgs.rawJSON = job.rawJSON
@@ -310,8 +318,10 @@ func (w *worker) getUniqueJob(ctx context.Context, job *Job) *Job {
 }
 
 func (w *worker) deleteUniqueJob(ctx context.Context, job *Job) {
-	var uniqueKey string
-	var err error
+	var (
+		uniqueKey string
+		err       error
+	)
 
 	if job.UniqueKey != "" {
 		uniqueKey = job.UniqueKey
@@ -331,15 +341,21 @@ func (w *worker) deleteUniqueJob(ctx context.Context, job *Job) {
 
 func (w *worker) removeJobFromInProgress(ctx context.Context, job *Job, fate terminateOp) {
 	err := w.redisAdapter.WithMulti(ctx, func(r redis.Redis) error {
-		if err := r.LRem(ctx, string(job.inProgQueue), job.rawJSON); err != nil {
-			return err
+		key := string(job.inProgQueue)
+		if err := r.LRem(ctx, key, job.rawJSON); err != nil {
+			return fmt.Errorf("LREM from %s: %w", key, err)
 		}
-		if err := r.Decr(ctx, redisKeyJobsLock(w.namespace, job.Name)); err != nil {
-			return err
+
+		key = redisKeyJobsLock(w.namespace, job.Name)
+		if err := r.Decr(ctx, key); err != nil {
+			return fmt.Errorf("DECR of %s: %w", key, err)
 		}
-		if err := r.HIncrBy(ctx, redisKeyJobsLockInfo(w.namespace, job.Name), w.poolID, -1); err != nil {
-			return err
+
+		key = redisKeyJobsLockInfo(w.namespace, job.Name)
+		if err := r.HIncrBy(ctx, key, w.poolID, -1); err != nil {
+			return fmt.Errorf("HINCRBY of %s: %w", key, err)
 		}
+
 		if err := fate(ctx, r); err != nil {
 			logError("worker.remove_job_from_in_progress.fate", err)
 		}
@@ -376,12 +392,16 @@ func terminateAndRetry(w *worker, jt *jobType, job *Job) (terminateOp, opType) {
 
 	fateFn := func(ctx context.Context, r redis.Redis) error {
 		score := float64(nowEpochSeconds() + jt.calcBackoff(job))
-		err := r.ZAdd(ctx, redisKeyRetry(w.namespace), score, rawJSON)
-		return err
+		key := redisKeyRetry(w.namespace)
+		if err := r.ZAdd(ctx, key, score, rawJSON); err != nil {
+			return fmt.Errorf("ZADD job to %s: %w", key, err)
+		}
+		return nil
 	}
 
 	return fateFn, opRetry
 }
+
 func terminateAndDead(w *worker, job *Job) (terminateOp, opType) {
 	rawJSON, err := job.serialize()
 	if err != nil {
@@ -394,9 +414,11 @@ func terminateAndDead(w *worker, job *Job) (terminateOp, opType) {
 		// The max # of jobs seems really horrible. Seems like operations should be on top of it.
 		// conn.Send("ZREMRANGEBYSCORE", redisKeyDead(w.namespace), "-inf", now - keepInterval)
 		// conn.Send("ZREMRANGEBYRANK", redisKeyDead(w.namespace), 0, -maxJobs)
-
 		score := float64(nowEpochSeconds())
-		err := r.ZAdd(ctx, redisKeyDead(w.namespace), score, rawJSON)
+		key := redisKeyDead(w.namespace)
+		if err := r.ZAdd(ctx, key, score, rawJSON); err != nil {
+			return fmt.Errorf("ZADD job to %s: %w", key, err)
+		}
 		return err
 	}
 
@@ -416,10 +438,11 @@ func (w *worker) jobFate(jt *jobType, job *Job) (terminateOp, opType) {
 	return terminateAndDead(w, job)
 }
 
-// Default algorithm returns an fastly increasing backoff counter which grows in an unbounded fashion
+// defaultBackoffCalculator returns an fastly increasing backoff counter which grows in an unbounded fashion.
 func defaultBackoffCalculator(job *Job) int64 {
 	fails := job.Fails
-	return (fails * fails * fails * fails) + 15 + (rand.Int63n(30) * (fails + 1))
+	//nolint:gosec // we don't need a crypto strong random number here
+	return (fails * fails * fails * fails) + 15 + (int64(rand.Uint32N(30)) * (fails + 1))
 }
 
 func convertToBytes(value any) ([]byte, bool) {

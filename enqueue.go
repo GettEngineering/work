@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -32,7 +33,7 @@ func NewEnqueuer(namespace string, redisAdapter redis.Redis) *Enqueuer {
 }
 
 // Enqueue will enqueue the specified job name and arguments. The args param can be nil if no args ar needed.
-// Example: e.Enqueue("send_email", work.Q{"addr": "test@example.com"})
+// Example: e.Enqueue("send_email", work.Q{"addr": "test@example.com"}).
 func (e *Enqueuer) Enqueue(jobName string, args map[string]interface{}) (*Job, error) {
 	job := &Job{
 		Name:       jobName,
@@ -47,9 +48,10 @@ func (e *Enqueuer) Enqueue(jobName string, args map[string]interface{}) (*Job, e
 	}
 
 	ctx := context.TODO()
+	key := e.queuePrefix + jobName
 
-	if err := e.redisAdapter.LPush(ctx, e.queuePrefix+jobName, rawJSON); err != nil {
-		return nil, err
+	if err := e.redisAdapter.LPush(ctx, key, rawJSON); err != nil {
+		return nil, fmt.Errorf("LPUSH job to %s: %w", key, err)
 	}
 
 	if err := e.addToKnownJobs(ctx, jobName); err != nil {
@@ -79,10 +81,11 @@ func (e *Enqueuer) EnqueueIn(jobName string, secondsFromNow int64, args map[stri
 	}
 
 	ctx := context.TODO()
+	key := redisKeyScheduled(e.namespace)
 
-	err = e.redisAdapter.ZAdd(ctx, redisKeyScheduled(e.namespace), float64(scheduledJob.RunAt), rawJSON)
+	err = e.redisAdapter.ZAdd(ctx, key, float64(scheduledJob.RunAt), rawJSON)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ZADD job to %s: %w", key, err)
 	}
 
 	if err := e.addToKnownJobs(ctx, jobName); err != nil {
@@ -95,14 +98,17 @@ func (e *Enqueuer) EnqueueIn(jobName string, secondsFromNow int64, args map[stri
 // EnqueueUnique enqueues a job unless a job is already enqueued with the same name and arguments.
 // The already-enqueued job can be in the normal work queue or in the scheduled job queue.
 // Once a worker begins processing a job, another job with the same name and arguments can be enqueued again.
-// Any failed jobs in the retry queue or dead queue don't count against the uniqueness -- so if a job fails and is retried, two unique jobs with the same name and arguments can be enqueued at once.
-// In order to add robustness to the system, jobs are only unique for 24 hours after they're enqueued. This is mostly relevant for scheduled jobs.
-// EnqueueUnique returns the job if it was enqueued and nil if it wasn't
+// Any failed jobs in the retry queue or dead queue don't count against the uniqueness -- so if a job fails and is retried,
+// two unique jobs with the same name and arguments can be enqueued at once.
+// In order to add robustness to the system, jobs are only unique for 24 hours after they're enqueued.
+// This is mostly relevant for scheduled jobs.
+// EnqueueUnique returns the job if it was enqueued and nil if it wasn't.
 func (e *Enqueuer) EnqueueUnique(jobName string, args map[string]interface{}) (*Job, error) {
 	return e.EnqueueUniqueByKey(jobName, args, nil)
 }
 
-// EnqueueUniqueIn enqueues a unique job in the scheduled job queue for execution in secondsFromNow seconds. See EnqueueUnique for the semantics of unique jobs.
+// EnqueueUniqueIn enqueues a unique job in the scheduled job queue for execution in secondsFromNow seconds.
+// See EnqueueUnique for the semantics of unique jobs.
 func (e *Enqueuer) EnqueueUniqueIn(jobName string, secondsFromNow int64, args map[string]interface{}) (*ScheduledJob, error) {
 	return e.EnqueueUniqueInByKey(jobName, secondsFromNow, args, nil)
 }
@@ -110,10 +116,12 @@ func (e *Enqueuer) EnqueueUniqueIn(jobName string, secondsFromNow int64, args ma
 // EnqueueUniqueByKey enqueues a job unless a job is already enqueued with the same name and key, updating arguments.
 // The already-enqueued job can be in the normal work queue or in the scheduled job queue.
 // Once a worker begins processing a job, another job with the same name and key can be enqueued again.
-// Any failed jobs in the retry queue or dead queue don't count against the uniqueness -- so if a job fails and is retried, two unique jobs with the same name and arguments can be enqueued at once.
-// In order to add robustness to the system, jobs are only unique for 24 hours after they're enqueued. This is mostly relevant for scheduled jobs.
-// EnqueueUniqueByKey returns the job if it was enqueued and nil if it wasn't
-func (e *Enqueuer) EnqueueUniqueByKey(jobName string, args map[string]interface{}, keyMap map[string]interface{}) (*Job, error) {
+// Any failed jobs in the retry queue or dead queue don't count against the uniqueness -- so if a job fails and is retried,
+// two unique jobs with the same name and arguments can be enqueued at once.
+// In order to add robustness to the system, jobs are only unique for 24 hours after they're enqueued.
+// This is mostly relevant for scheduled jobs.
+// EnqueueUniqueByKey returns the job if it was enqueued and nil if it wasn't.
+func (e *Enqueuer) EnqueueUniqueByKey(jobName string, args, keyMap map[string]any) (*Job, error) {
 	enqueue, job, err := e.uniqueJobHelper(jobName, args, keyMap)
 	if err != nil {
 		return nil, err
@@ -127,9 +135,14 @@ func (e *Enqueuer) EnqueueUniqueByKey(jobName string, args map[string]interface{
 	return nil, err
 }
 
-// EnqueueUniqueInByKey enqueues a job in the scheduled job queue that is unique on specified key for execution in secondsFromNow seconds. See EnqueueUnique for the semantics of unique jobs.
-// Subsequent calls with same key will update arguments
-func (e *Enqueuer) EnqueueUniqueInByKey(jobName string, secondsFromNow int64, args map[string]interface{}, keyMap map[string]interface{}) (*ScheduledJob, error) {
+// EnqueueUniqueInByKey enqueues a job in the scheduled job queue that is unique on specified key for execution
+// in secondsFromNow seconds. See EnqueueUnique for the semantics of unique jobs.
+// Subsequent calls with same key will update arguments.
+func (e *Enqueuer) EnqueueUniqueInByKey(
+	jobName string,
+	secondsFromNow int64,
+	args, keyMap map[string]any,
+) (*ScheduledJob, error) {
 	enqueue, job, err := e.uniqueJobHelper(jobName, args, keyMap)
 	if err != nil {
 		return nil, err
@@ -161,8 +174,10 @@ func (e *Enqueuer) addToKnownJobs(ctx context.Context, jobName string) error {
 		}
 	}
 	if needSadd {
-		if err := e.redisAdapter.SAdd(ctx, redisKeyKnownJobs(e.namespace), jobName); err != nil {
-			return err
+		key := redisKeyKnownJobs(e.namespace)
+
+		if err := e.redisAdapter.SAdd(ctx, key, jobName); err != nil {
+			return fmt.Errorf("SADD job to %s: %w", key, err)
 		}
 
 		e.mtx.Lock()
@@ -228,7 +243,8 @@ func (e *Enqueuer) uniqueJobHelper(
 		if runAt != nil {
 			script = e.enqueueUniqueInScript
 			scriptKeys[0] = redisKeyScheduled(e.namespace) // KEY[1]
-			scriptArgs = append(scriptArgs, *runAt)        // ARGV[3]
+
+			scriptArgs = append(scriptArgs, *runAt) // ARGV[3]
 		}
 
 		reply := script.Run(ctx, scriptKeys, scriptArgs...)

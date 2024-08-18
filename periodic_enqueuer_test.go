@@ -95,7 +95,8 @@ func TestPeriodicEnqueuer(t *testing.T) {
 	assert.True(t, pe.shouldEnqueue(ctx))
 }
 
-func TestPeriodicEnqueuerSpawn(t *testing.T) {
+func TestPeriodicEnqueuerSpawn(_ *testing.T) {
+	// TODO: something should be tested here
 	ctx := context.Background()
 	redisAdapter := newTestRedis(":6379")
 	ns := "work"

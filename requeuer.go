@@ -26,8 +26,11 @@ type requeuer struct {
 
 func newRequeuer(namespace string, redisAdapter redis.Redis, requeueKey string, jobNames []string) *requeuer {
 	keys := make([]string, 0, len(jobNames)+2+2)
-	keys = append(keys, requeueKey)              // KEY[1]
-	keys = append(keys, redisKeyDead(namespace)) // KEY[2]
+	keys = append(
+		keys,
+		requeueKey,              // KEY[1]
+		redisKeyDead(namespace), // KEY[2]
+	)
 	for _, jobName := range jobNames {
 		keys = append(keys, redisKeyJobs(namespace, jobName)) // KEY[3, 4, ...]
 	}
@@ -74,7 +77,8 @@ func (r *requeuer) loop() {
 	// If we have 100 processes all running requeuers,
 	// there's probably too much hitting redis.
 	// So later on we'l have to implement exponential backoff
-	ticker := time.Tick(1000 * time.Millisecond)
+	ticker := time.NewTicker(1000 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -85,7 +89,7 @@ func (r *requeuer) loop() {
 			for r.process(ctx) {
 			}
 			r.doneDrainingChan <- struct{}{}
-		case <-ticker:
+		case <-ticker.C:
 			for r.process(ctx) {
 			}
 		}
@@ -103,12 +107,11 @@ func (r *requeuer) process(ctx context.Context) bool {
 		return false
 	}
 
-	if res == "" {
-		return false
-	} else if res == "dead" {
+	switch res {
+	case "dead":
 		logError("requeuer.process.dead", fmt.Errorf("no job name"))
 		return true
-	} else if res == "ok" {
+	case "ok":
 		return true
 	}
 

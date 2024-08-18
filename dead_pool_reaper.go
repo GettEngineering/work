@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -63,8 +63,9 @@ func (r *deadPoolReaper) loop() {
 			r.doneStoppingChan <- struct{}{}
 			return
 		case <-timer.C:
-			// Schedule next occurrence periodically with jitter
-			timer.Reset(r.reapPeriod + time.Duration(rand.Intn(reapJitterSecs))*time.Second)
+			// Schedule next occurrence periodically with jitter.
+			//nolint:gosec // we don't need a crypto strong random number here
+			timer.Reset(r.reapPeriod + time.Duration(rand.IntN(reapJitterSecs))*time.Second)
 
 			// Reap
 			if err := r.reap(ctx); err != nil {
@@ -88,7 +89,9 @@ func (r *deadPoolReaper) reap(ctx context.Context) error {
 		lockJobTypes := jobTypes
 		// if we found jobs from the heartbeat, requeue them and remove the heartbeat
 		if len(jobTypes) > 0 {
-			r.requeueInProgressJobs(ctx, deadPoolID, jobTypes)
+			if err := r.requeueInProgressJobs(ctx, deadPoolID, jobTypes); err != nil {
+				return fmt.Errorf("requeue in progress jobs: %w", err)
+			}
 			if err := r.redisAdapter.Del(ctx, redisKeyHeartbeat(r.namespace, deadPoolID)); err != nil {
 				return fmt.Errorf("delete heartbeat: %w", err)
 			}
@@ -120,7 +123,7 @@ func (r *deadPoolReaper) cleanStaleLockInfo(ctx context.Context, poolID string, 
 	}
 
 	if err := redisReapLocksScript.Run(ctx, keys, poolID).Err(); err != nil && !errors.Is(err, redis.Nil) {
-		return err
+		return fmt.Errorf("run script to reap stale locks: %w", err)
 	}
 
 	return nil
@@ -148,7 +151,7 @@ func (r *deadPoolReaper) requeueInProgressJobs(ctx context.Context, poolID strin
 		if errors.Is(err, redis.Nil) {
 			return nil
 		} else if err != nil {
-			return err
+			return fmt.Errorf("run script to requeue in progress jobs: %w", err)
 		}
 
 		if len(values) != 3 {
@@ -163,7 +166,7 @@ func (r *deadPoolReaper) findDeadPools(ctx context.Context) (map[string][]string
 
 	workerPoolIDs, err := r.redisAdapter.SMembers(ctx, workerPoolsKey)
 	if err != nil {
-		return nil, fmt.Errorf("get worker pools: %w", err)
+		return nil, fmt.Errorf("SMEMBERS of %s: %w", workerPoolsKey, err)
 	}
 
 	deadPools := map[string][]string{}

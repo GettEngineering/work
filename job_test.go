@@ -88,7 +88,7 @@ func TestJobArgumentExtraction(t *testing.T) {
 }
 
 func TestJobArgumentExtractionBadString(t *testing.T) {
-	var testCases = []struct {
+	testCases := []struct {
 		key  string
 		val  interface{}
 		good bool
@@ -108,26 +108,18 @@ func TestJobArgumentExtractionBadString(t *testing.T) {
 		r := j.ArgString(tc.key)
 		err := j.ArgError()
 		if tc.good {
-			if err != nil {
-				t.Errorf("Failed test case: %v; err = %v\n", tc, err)
-			}
-			if r != tc.val.(string) {
-				t.Errorf("Failed test case: %v; r = %v\n", tc, r)
-			}
+			assert.NoError(t, err)
+			assert.EqualValues(t, r, tc.val)
 		} else {
-			if err == nil {
-				t.Errorf("Failed test case: %v; but err was nil\n", tc)
-			}
-			if r != "" {
-				t.Errorf("Failed test case: %v; but r was %v\n", tc, r)
-			}
+			assert.Error(t, err, "failed test case: %v, but err was nil", tc)
+			assert.Empty(t, r, "failed test case: %v, but r was %v", tc, r)
 		}
 		j.argError = nil
 	}
 }
 
 func TestJobArgumentExtractionBadBool(t *testing.T) {
-	var testCases = []struct {
+	testCases := []struct {
 		key  string
 		val  interface{}
 		good bool
@@ -148,26 +140,18 @@ func TestJobArgumentExtractionBadBool(t *testing.T) {
 		r := j.ArgBool(tc.key)
 		err := j.ArgError()
 		if tc.good {
-			if err != nil {
-				t.Errorf("Failed test case: %v; err = %v\n", tc, err)
-			}
-			if r != tc.val.(bool) {
-				t.Errorf("Failed test case: %v; r = %v\n", tc, r)
-			}
+			assert.NoError(t, err)
+			assert.EqualValues(t, r, tc.val)
 		} else {
-			if err == nil {
-				t.Errorf("Failed test case: %v; but err was nil\n", tc)
-			}
-			if r != false {
-				t.Errorf("Failed test case: %v; but r was %v\n", tc, r)
-			}
+			assert.Error(t, err, "failed test case: %v, but err was nil", tc)
+			assert.False(t, r, "failed test case: %v, but r was %v", tc, r)
 		}
 		j.argError = nil
 	}
 }
 
 func TestJobArgumentExtractionBadInt(t *testing.T) {
-	var testCases = []struct {
+	testCases := []struct {
 		key  string
 		val  interface{}
 		good bool
@@ -213,7 +197,7 @@ func TestJobArgumentExtractionBadInt(t *testing.T) {
 }
 
 func TestJobArgumentExtractionBadFloat(t *testing.T) {
-	var testCases = []struct {
+	testCases := []struct {
 		key  string
 		val  interface{}
 		good bool

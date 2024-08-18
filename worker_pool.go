@@ -12,7 +12,9 @@ import (
 	"github.com/GettEngineering/work/redis"
 )
 
-// WorkerPool represents a pool of workers. It forms the primary API of gocraft/work. WorkerPools provide the public API of gocraft/work. You can attach jobs and middlware to them. You can start and stop them. Based on their concurrency setting, they'll spin up N worker goroutines.
+// WorkerPool represents a pool of workers. It forms the primary API of gocraft/work.
+// WorkerPools provide the public API of gocraft/work. You can attach jobs and middlware to them.
+// You can start and stop them. Based on their concurrency setting, they'll spin up N worker goroutines.
 type WorkerPool struct {
 	workerPoolID  string
 	concurrency   uint
@@ -113,7 +115,7 @@ func NewWorkerPoolWithOptions(
 	}
 
 	for i := uint(0); i < wp.concurrency; i++ {
-		w := newWorker(wp.namespace, wp.workerPoolID, redisAdapter, wp.contextType, nil, wp.jobTypes, wp.sleepBackoffs)
+		w := newWorker(wp.namespace, wp.workerPoolID, redisAdapter, wp.contextType, wp.jobTypes, wp.sleepBackoffs)
 		wp.workers = append(wp.workers, w)
 	}
 
@@ -121,8 +123,8 @@ func NewWorkerPoolWithOptions(
 }
 
 // Middleware appends the specified function to the middleware chain. The fn can take one of these forms:
-// (*ContextType).func(*Job, NextMiddlewareFunc) error, (ContextType matches the type of ctx specified when creating a pool)
-// func(*Job, NextMiddlewareFunc) error, for the generic middleware format.
+//   - (*ContextType).func(*Job, NextMiddlewareFunc) error, (ContextType matches the type of ctx specified when creating a pool)
+//   - func(*Job, NextMiddlewareFunc) error, for the generic middleware format.
 func (wp *WorkerPool) Middleware(fn interface{}) *WorkerPool {
 	vfn := reflect.ValueOf(fn)
 	validateMiddlewareType(wp.contextType, vfn)
@@ -145,10 +147,11 @@ func (wp *WorkerPool) Middleware(fn interface{}) *WorkerPool {
 	return wp
 }
 
-// Job registers the job name to the specified handler fn. For instance, when workers pull jobs from the name queue they'll be processed by the specified handler function.
+// Job registers the job name to the specified handler fn. For instance, when workers pull jobs from the name queue,
+// they'll be processed by the specified handler function.
 // fn can take one of these forms:
-// (*ContextType).func(*Job) error, (ContextType matches the type of ctx specified when creating a pool)
-// func(*Job) error, for the generic handler format.
+//   - (*ContextType).func(*Job) error, (ContextType matches the type of ctx specified when creating a pool)
+//   - func(*Job) error, for the generic handler format.
 func (wp *WorkerPool) Job(name string, fn interface{}) *WorkerPool {
 	return wp.JobWithOptions(name, JobOptions{}, fn)
 }
@@ -183,7 +186,7 @@ func (wp *WorkerPool) JobWithOptions(name string, jobOpts JobOptions, fn interfa
 // The spec format is based on https://godoc.org/github.com/robfig/cron, which is a relatively standard cron format.
 // Note that the first value is the seconds!
 // If you have multiple worker pools on different machines, they'll all coordinate and only enqueue your job once.
-func (wp *WorkerPool) PeriodicallyEnqueue(spec string, jobName string) *WorkerPool {
+func (wp *WorkerPool) PeriodicallyEnqueue(spec, jobName string) *WorkerPool {
 	p := cron.NewParser(cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 
 	schedule, err := p.Parse(spec)
@@ -235,6 +238,7 @@ func (wp *WorkerPool) Stop() {
 	wg := sync.WaitGroup{}
 	for _, w := range wp.workers {
 		wg.Add(1)
+
 		go func(w *worker) {
 			w.stop()
 			wg.Done()
@@ -248,11 +252,13 @@ func (wp *WorkerPool) Stop() {
 	wp.periodicEnqueuer.stop()
 }
 
-// Drain drains all jobs in the queue before returning. Note that if jobs are added faster than we can process them, this function wouldn't return.
+// Drain drains all jobs in the queue before returning. Note that if jobs are added faster than we can process them,
+// this function wouldn't return.
 func (wp *WorkerPool) Drain() {
 	wg := sync.WaitGroup{}
 	for _, w := range wp.workers {
 		wg.Add(1)
+
 		go func(w *worker) {
 			w.drain()
 			wg.Done()
@@ -314,7 +320,7 @@ func (wp *WorkerPool) writeConcurrencyControlsToRedis(ctx context.Context) {
 	}
 }
 
-// validateContextType will panic if context is invalid
+// validateContextType will panic if context is invalid.
 func validateContextType(ctxType reflect.Type) {
 	if ctxType.Kind() != reflect.Struct {
 		panic("work: Context needs to be a struct type")
@@ -333,15 +339,15 @@ func validateMiddlewareType(ctxType reflect.Type, vfn reflect.Value) {
 	}
 }
 
-// Since it's easy to pass the wrong method as a middleware/handler, and since the user can't rely on static type checking since we use reflection,
-// lets be super helpful about what they did and what they need to do.
+// Since it's easy to pass the wrong method as a middleware/handler, and since the user can't rely on static type
+// checking since we use reflection, lets be super helpful about what they did and what they need to do.
 // Arguments:
 //   - vfn is the failed method
 //   - addingType is for "You are adding {addingType} to a worker pool...". Eg, "middleware" or "a handler"
 //   - yourType is for "Your {yourType} function can have...". Eg, "middleware" or "handler" or "error handler"
 //   - args is like "rw web.ResponseWriter, req *web.Request, next web.NextMiddlewareFunc"
 //   - NOTE: args can be calculated if you pass in each type. BUT, it doesn't have example argument name, so it has less copy/paste value.
-func instructiveMessage(vfn reflect.Value, addingType string, yourType string, args string, ctxType reflect.Type) string {
+func instructiveMessage(vfn reflect.Value, addingType, yourType, args string, ctxType reflect.Type) string {
 	// Get context type without package.
 	ctxString := ctxType.String()
 	splitted := strings.Split(ctxString, ".")
@@ -385,6 +391,7 @@ func isValidHandlerType(ctxType reflect.Type, vfn reflect.Value) bool {
 	}
 
 	outType := fnType.Out(0)
+
 	var e *error
 
 	if outType != reflect.TypeOf(e).Elem() {
@@ -392,18 +399,20 @@ func isValidHandlerType(ctxType reflect.Type, vfn reflect.Value) bool {
 	}
 
 	var j *Job
-	if numIn == 1 {
+
+	switch numIn {
+	case 1:
 		if fnType.In(0) != reflect.TypeOf(j) {
 			return false
 		}
-	} else if numIn == 2 {
+	case 2:
 		if fnType.In(0) != reflect.PointerTo(ctxType) {
 			return false
 		}
 		if fnType.In(1) != reflect.TypeOf(j) {
 			return false
 		}
-	} else {
+	default:
 		return false
 	}
 
@@ -425,22 +434,27 @@ func isValidMiddlewareType(ctxType reflect.Type, vfn reflect.Value) bool {
 	}
 
 	outType := fnType.Out(0)
+
 	var e *error
 
 	if outType != reflect.TypeOf(e).Elem() {
 		return false
 	}
 
-	var j *Job
-	var nfn NextMiddlewareFunc
-	if numIn == 2 {
+	var (
+		j   *Job
+		nfn NextMiddlewareFunc
+	)
+
+	switch numIn {
+	case 2:
 		if fnType.In(0) != reflect.TypeOf(j) {
 			return false
 		}
 		if fnType.In(1) != reflect.TypeOf(nfn) {
 			return false
 		}
-	} else if numIn == 3 {
+	case 3:
 		if fnType.In(0) != reflect.PointerTo(ctxType) {
 			return false
 		}
@@ -450,7 +464,7 @@ func isValidMiddlewareType(ctxType reflect.Type, vfn reflect.Value) bool {
 		if fnType.In(2) != reflect.TypeOf(nfn) {
 			return false
 		}
-	} else {
+	default:
 		return false
 	}
 

@@ -2,10 +2,11 @@ package main
 
 import (
 	"flag"
-	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	goredisv8 "github.com/go-redis/redis/v8"
@@ -27,15 +28,15 @@ var (
 func main() {
 	flag.Parse()
 
-	fmt.Println("Starting workwebui:")
-	fmt.Println("redis = ", *redisHostPort)
-	fmt.Println("database = ", *redisDatabase)
-	fmt.Println("namespace = ", *redisNamespace)
-	fmt.Println("listen = ", *webHostPort)
+	log.Println("Starting workwebui:")
+	log.Println("redis = ", *redisHostPort)
+	log.Println("database = ", *redisDatabase)
+	log.Println("namespace = ", *redisNamespace)
+	log.Println("listen = ", *webHostPort)
 
 	database, err := strconv.Atoi(*redisDatabase)
 	if err != nil {
-		fmt.Printf("Error: %v is not a valid database value", *redisDatabase)
+		log.Printf("Error: %v is not a valid database value", *redisDatabase)
 		return
 	}
 
@@ -45,13 +46,14 @@ func main() {
 	server.Start()
 
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, os.Kill)
+	//nolint:staticcheck // os.Kill is for Windows compatibility
+	signal.Notify(c, os.Kill, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 
 	<-c
 
 	server.Stop()
 
-	fmt.Println("\nQuitting...")
+	log.Println("\nQuitting...")
 }
 
 func newRedis(addr string, database int) workredis.Redis {
@@ -66,15 +68,13 @@ func newRedis(addr string, database int) workredis.Redis {
 			},
 			Wait: true,
 		}
-		return redigoadapter.NewRedigoAdapter(pool)
-	case "goredisv8":
-		fallthrough
+		return redigoadapter.NewAdapter(pool)
 	default:
 		rdb := goredisv8.NewClient(&goredisv8.Options{
 			Addr:     addr,
 			Password: "",
 			DB:       database,
 		})
-		return goredisv8adapter.NewGoredisAdapter(rdb)
+		return goredisv8adapter.NewAdapter(rdb)
 	}
 }

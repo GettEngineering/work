@@ -1,6 +1,28 @@
+GOLANGCI_LINT_VERSION ?= v1.60.1
+GOIMPORTS_VERSION     ?= v0.22.0
+GCI_VERSION           ?= v0.13.4
+GOFUMPT_VERSION       ?= v0.6.0
+
+FILES_GO = $(shell find . -type f -name '*.go')
+
 help:
 	@echo "$$(grep -hE '^\S+:.*##' $(MAKEFILE_LIST) | sed -e 's/:.*##\s*/:/' | column -c2 -t -s :)"
 .PHONY: help
+
+format: ## Format code
+	@echo "+ $@"
+	@go run golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION) -local "github.com/gtforge" -w $(FILES_GO)
+	@go run github.com/daixiang0/gci@$(GCI_VERSION) write \
+		-s standard \
+		-s default \
+		-s "Prefix(github.com/GettEngineering/work)" $(FILES_GO)
+	@go run mvdan.cc/gofumpt@$(GOFUMPT_VERSION) -l -w .
+.PHONY: format
+
+lint: ## Run linter
+	@echo "+ $@"
+	go run github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run --allow-parallel-runners
+.PHONY: lint
 
 test-setup: ## Prepare infrastructure for tests
 	@echo "+ $@"
@@ -26,7 +48,7 @@ test: ## Prepare infrastructure and run tests with redigo and goredisv8 adapters
 
 bench-run-goworker:
 	@echo "+ $@"
-	go run ./benches/bench_goworker/main.go
+	go run ./benches/bench_goworker/main.go -queues="myqueue,myqueue2,myqueue3,myqueue4,myqueue5" -namespace="bench_test:" -concurrency=50 -use-number
 .PHONY: bench-run-goworker
 
 bench-run-goworkers:

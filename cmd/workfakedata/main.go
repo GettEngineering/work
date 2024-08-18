@@ -4,7 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"math/rand"
+	"log"
+	"math/rand/v2"
 	"os"
 	"time"
 
@@ -17,14 +18,16 @@ import (
 	redigoadapter "github.com/GettEngineering/work/redis/adapters/redigo"
 )
 
-var redisHostPort = flag.String("redis", ":6379", "redis hostport")
-var redisNamespace = flag.String("ns", "work", "redis namespace")
+var (
+	redisHostPort  = flag.String("redis", ":6379", "redis hostport")
+	redisNamespace = flag.String("ns", "work", "redis namespace")
+)
 
-func epsilonHandler(job *work.Job) error {
-	fmt.Println("epsilon")
+func epsilonHandler(_ *work.Job) error {
+	log.Println("epsilon")
 	time.Sleep(time.Second)
 
-	if rand.Intn(2) == 0 {
+	if rand.IntN(2) == 0 { //nolint:gosec // we don't need a crypto strong random number here
 		return fmt.Errorf("random error")
 	}
 	return nil
@@ -35,7 +38,7 @@ type workContext struct{}
 func main() {
 	ctx := context.Background()
 	flag.Parse()
-	fmt.Println("Installing some fake data")
+	log.Println("Installing some fake data")
 
 	redisAdapter := newRedis(*redisHostPort)
 	cleanKeyspace(ctx, redisAdapter, *redisNamespace)
@@ -52,7 +55,10 @@ func main() {
 		for {
 			en := work.NewEnqueuer(*redisNamespace, redisAdapter)
 			for i := 0; i < 20; i++ {
-				en.Enqueue("foobar", work.Q{"i": i})
+				_, err := en.Enqueue("foobar", work.Q{"i": i})
+				if err != nil {
+					panic("could not enqueue: " + err.Error())
+				}
 			}
 
 			time.Sleep(1 * time.Second)
@@ -76,22 +82,20 @@ func newRedis(addr string) workredis.Redis {
 			Dial: func() (redis.Conn, error) {
 				c, err := redis.Dial("tcp", addr)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("dial redis: %w", err)
 				}
 				return c, nil
 			},
 			Wait: true,
 		}
-		return redigoadapter.NewRedigoAdapter(pool)
-	case "goredisv8":
-		fallthrough
+		return redigoadapter.NewAdapter(pool)
 	default:
 		rdb := goredisv8.NewClient(&goredisv8.Options{
 			Addr:     addr,
 			Password: "",
 			DB:       0,
 		})
-		return goredisv8adapter.NewGoredisAdapter(rdb)
+		return goredisv8adapter.NewAdapter(rdb)
 	}
 }
 

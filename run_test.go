@@ -15,19 +15,23 @@ func TestRunBasicMiddleware(t *testing.T) {
 	}
 
 	mw2 := func(c *tstCtx, j *Job, next NextMiddlewareFunc) error {
-		c.record(j.Args["mw1"].(string))
+		v, ok := j.Args["mw1"].(string)
+		assert.True(t, ok)
+		c.record(v)
 		c.record("mw2")
 		return next()
 	}
 
-	mw3 := func(c *tstCtx, j *Job, next NextMiddlewareFunc) error {
+	mw3 := func(c *tstCtx, _ *Job, next NextMiddlewareFunc) error {
 		c.record("mw3")
 		return next()
 	}
 
 	h1 := func(c *tstCtx, j *Job) error {
 		c.record("h1")
-		c.record(j.Args["a"].(string))
+		v, ok := j.Args["a"].(string)
+		assert.True(t, ok)
+		c.record(v)
 		return nil
 	}
 
@@ -50,15 +54,16 @@ func TestRunBasicMiddleware(t *testing.T) {
 
 	v, err := runJob(job, tstCtxType, middleware, jt)
 	assert.NoError(t, err)
-	c := v.Interface().(*tstCtx)
+	c, ok := v.Interface().(*tstCtx)
+	assert.True(t, ok)
 	assert.Equal(t, "mw1mw2mw3h1foo", c.String())
 }
 
 func TestRunHandlerError(t *testing.T) {
-	mw1 := func(j *Job, next NextMiddlewareFunc) error {
+	mw1 := func(_ *Job, next NextMiddlewareFunc) error {
 		return next()
 	}
-	h1 := func(c *tstCtx, j *Job) error {
+	h1 := func(c *tstCtx, _ *Job) error {
 		c.record("h1")
 		return fmt.Errorf("h1_err")
 	}
@@ -81,15 +86,16 @@ func TestRunHandlerError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Equal(t, "h1_err", err.Error())
 
-	c := v.Interface().(*tstCtx)
+	c, ok := v.Interface().(*tstCtx)
+	assert.True(t, ok)
 	assert.Equal(t, "h1", c.String())
 }
 
 func TestRunMwError(t *testing.T) {
-	mw1 := func(j *Job, next NextMiddlewareFunc) error {
+	mw1 := func(_ *Job, _ NextMiddlewareFunc) error {
 		return fmt.Errorf("mw1_err")
 	}
-	h1 := func(c *tstCtx, j *Job) error {
+	h1 := func(c *tstCtx, _ *Job) error {
 		c.record("h1")
 		return fmt.Errorf("h1_err")
 	}
@@ -114,10 +120,10 @@ func TestRunMwError(t *testing.T) {
 }
 
 func TestRunHandlerPanic(t *testing.T) {
-	mw1 := func(j *Job, next NextMiddlewareFunc) error {
+	mw1 := func(_ *Job, next NextMiddlewareFunc) error {
 		return next()
 	}
-	h1 := func(c *tstCtx, j *Job) error {
+	h1 := func(c *tstCtx, _ *Job) error {
 		c.record("h1")
 
 		panic("dayam")
@@ -143,10 +149,10 @@ func TestRunHandlerPanic(t *testing.T) {
 }
 
 func TestRunMiddlewarePanic(t *testing.T) {
-	mw1 := func(j *Job, next NextMiddlewareFunc) error {
+	mw1 := func(_ *Job, _ NextMiddlewareFunc) error {
 		panic("dayam")
 	}
-	h1 := func(c *tstCtx, j *Job) error {
+	h1 := func(c *tstCtx, _ *Job) error {
 		c.record("h1")
 		return nil
 	}

@@ -1,0 +1,128 @@
+run:
+  allow-parallel-runners: true
+  timeout: 3m
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+  govet:
+    enable-all: true
+    disable:
+      - shadow
+      - fieldalignment
+  gofmt:
+    simplify: true
+  gocyclo:
+    min-complexity: 15
+  goimports:
+    local-prefixes: github.com/GettEngineering
+  gci:
+    sections:
+      - standard
+      - default
+      - prefix(github.com/GettEngineering/work)
+  dupl:
+    threshold: 100
+  lll:
+    line-length: 140
+    tab-width: 4
+  nestif:
+    min-complexity: 8
+  unused:
+    check-exported: true
+  nakedret:
+    max-func-lines: 30
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: false
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - style
+      - performance
+      - experimental
+      - opinionated
+linters:
+  disable-all: true
+  fast: false
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - decorder
+    - dogsled
+    - dupl
+    - errcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exportloopref
+    - forbidigo
+    - forcetypeassert
+    - gci
+    - gochecknoinits
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godot
+    - gofmt
+    - gofumpt
+    - goheader
+    - goimports
+    - gomoddirectives
+    - gomodguard
+    - goprintffuncname
+    - gosec
+    - gosimple
+    - govet
+    - grouper
+    - importas
+    - ineffassign
+    - lll
+    - maintidx
+    - makezero
+    - misspell
+    - nakedret
+    - nestif
+    - nilerr
+    - noctx
+    - nolintlint
+    - prealloc
+    - predeclared
+    - promlinter
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - stylecheck
+    - tenv
+    - thelper
+    - tparallel
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - wastedassign
+    - whitespace
+    - wrapcheck
+issues:
+  exclude-rules:
+    - path: redis/adapters/goredisv8/adapter.go
+      linters:
+        # no reason to wrap original errors
+        - wrapcheck
+    - path: redis/adapters/redigo/adapter.go
+      linters:
+        # no reason to wrap original errors
+        - wrapcheck
+    - path: .*_test.go
+      linters:
+        # allow for better readability in tests
+        - dupl
+        - goconst
+        - unparam
+        - wrapcheck

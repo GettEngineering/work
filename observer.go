@@ -94,8 +94,10 @@ func (o *observer) drain() {
 }
 
 func (o *observer) observeStarted(jobName, jobID string, arguments map[string]interface{}) {
-	var argsJSON []byte
-	var err error
+	var (
+		argsJSON []byte
+		err      error
+	)
 
 	if len(arguments) == 0 {
 		argsJSON = []byte("")
@@ -135,10 +137,11 @@ func (o *observer) observeCheckin(jobName, jobID, checkin string) {
 func (o *observer) loop() {
 	ctx := context.TODO()
 
-	// Every tick we'll update redis if necessary
+	// Every tick we'll update redis if necessary.
 	// We don't update it on every job because the only purpose of this data is for humans to inspect the system,
 	// and a fast worker could move onto new jobs every few ms.
-	ticker := time.Tick(1000 * time.Millisecond)
+	ticker := time.NewTicker(1000 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -159,7 +162,7 @@ func (o *observer) loop() {
 					break DRAIN_LOOP
 				}
 			}
-		case <-ticker:
+		case <-ticker.C:
 			if o.lastWrittenVersion != o.version {
 				if err := o.writeStatus(ctx, o.currentStartedObservation); err != nil {
 					logError("observer.write", err)
@@ -173,11 +176,12 @@ func (o *observer) loop() {
 }
 
 func (o *observer) process(ctx context.Context, obv *observation) {
-	if obv.kind == observationKindStarted {
+	switch obv.kind {
+	case observationKindStarted:
 		o.currentStartedObservation = obv
-	} else if obv.kind == observationKindDone {
+	case observationKindDone:
 		o.currentStartedObservation = nil
-	} else if obv.kind == observationKindCheckin {
+	case observationKindCheckin:
 		if (o.currentStartedObservation != nil) && (obv.jobID == o.currentStartedObservation.jobID) {
 			o.currentStartedObservation.checkin = obv.checkin
 			o.currentStartedObservation.checkinAt = obv.checkinAt
@@ -201,48 +205,52 @@ func (o *observer) writeStatus(ctx context.Context, obv *observation) error {
 
 	if obv == nil {
 		if err := o.redisAdapter.Del(ctx, key); err != nil {
-			return err
-		}
-	} else {
-		// hash:
-		// job_name -> obv.Name
-		// job_id -> obv.jobID
-		// started_at -> obv.startedAt
-		// args -> obv.argsJSON
-		// checkin -> obv.checkin
-		// checkin_at -> obv.checkinAt
-
-		if obv.argsJSONErr != nil {
-			return obv.argsJSONErr
+			return fmt.Errorf("DEL of %s: %w", key, err)
 		}
 
-		args := make([]interface{}, 0, 12)
-		args = append(args,
-			"job_name", obv.jobName,
-			"job_id", obv.jobID,
-			"started_at", obv.startedAt,
-			"args", obv.argsJSON,
+		return nil
+	}
+
+	// hash:
+	// job_name -> obv.Name
+	// job_id -> obv.jobID
+	// started_at -> obv.startedAt
+	// args -> obv.argsJSON
+	// checkin -> obv.checkin
+	// checkin_at -> obv.checkinAt
+
+	if obv.argsJSONErr != nil {
+		return obv.argsJSONErr
+	}
+
+	args := make([]interface{}, 0, 12)
+	args = append(
+		args,
+		"job_name", obv.jobName,
+		"job_id", obv.jobID,
+		"started_at", obv.startedAt,
+		"args", obv.argsJSON,
+	)
+
+	if (obv.checkin != "") && (obv.checkinAt > 0) {
+		args = append(
+			args,
+			"checkin", obv.checkin,
+			"checkin_at", obv.checkinAt,
 		)
+	}
 
-		if (obv.checkin != "") && (obv.checkinAt > 0) {
-			args = append(args,
-				"checkin", obv.checkin,
-				"checkin_at", obv.checkinAt,
-			)
+	err := o.redisAdapter.WithPipeline(ctx, func(r redis.Redis) error {
+		if err := r.HSet(ctx, key, args...); err != nil {
+			return fmt.Errorf("HSET worker to %s: %w", key, err)
 		}
-
-		err := o.redisAdapter.WithPipeline(ctx, func(r redis.Redis) error {
-			if err := r.HSet(ctx, key, args...); err != nil {
-				return err
-			}
-			if err := r.Expire(ctx, key, 24*time.Hour); err != nil {
-				return err
-			}
-			return nil
-		})
-		if err != nil {
-			return err
+		if err := r.Expire(ctx, key, 24*time.Hour); err != nil {
+			return fmt.Errorf("EXPIRE worker %s: %w", key, err)
 		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("set worker observation %s: %w", o.workerID, err)
 	}
 
 	return nil

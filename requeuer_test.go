@@ -48,7 +48,6 @@ func TestRequeue(t *testing.T) {
 	// We want to ensure it's requeued with t=now.
 	// On boundary conditions with the VM, nowEpochSeconds() might be 1 or 2 secs ahead of EnqueuedAt
 	assert.True(t, (j.EnqueuedAt+2) >= nowEpochSeconds())
-
 }
 
 func TestRequeueUnknown(t *testing.T) {

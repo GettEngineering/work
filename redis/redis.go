@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	Nil               = errors.New("redis: nil")
+	Nil               = errors.New("redis: nil") //nolint:errname,revive,stylecheck // the same name as in the go-redis package
 	ErrPipeInProgress = errors.New("multi or pipeline already in progress")
 )
 
@@ -101,7 +101,7 @@ type Redis interface {
 	ZCard(ctx context.Context, key string) (int64, error)
 	// ZRangeByScoreWithScores returns all the elements with their scores in the sorted set at key with a score between
 	// min and max (including elements with score equal to min or max).
-	ZRangeByScoreWithScores(ctx context.Context, key string, min, max string, offset, count int64) (ZRanger, error)
+	ZRangeByScoreWithScores(ctx context.Context, key string, minScore, maxScore string, offset, count int64) (ZRanger, error)
 	// ZRangeWithScores returns all the elements with their scores in the sorted set at key with a rank between
 	// start and stop.
 	ZRangeWithScores(ctx context.Context, key string, start, stop int64) (ZRanger, error)

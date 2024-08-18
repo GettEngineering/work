@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -83,14 +84,17 @@ func (h *workerPoolHeartbeater) loop() {
 
 	h.startedAt = nowEpochSeconds()
 	h.heartbeat(ctx) // do it right away
-	ticker := time.Tick(h.beatPeriod)
+
+	ticker := time.NewTicker(h.beatPeriod)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-h.stopChan:
 			h.removeHeartbeat(ctx)
 			h.doneStoppingChan <- struct{}{}
 			return
-		case <-ticker:
+		case <-ticker.C:
 			h.heartbeat(ctx)
 		}
 	}
@@ -102,7 +106,7 @@ func (h *workerPoolHeartbeater) heartbeat(ctx context.Context) {
 
 	err := h.redisAdapter.WithPipeline(ctx, func(r redis.Redis) error {
 		if err := r.SAdd(ctx, workerPoolsKey, h.workerPoolID); err != nil {
-			return err
+			return fmt.Errorf("SADD worker pool id %s: %w", h.workerPoolID, err)
 		}
 		if err := r.HSet(ctx, heartbeatKey,
 			"heartbeat_at", nowEpochSeconds(),
@@ -113,7 +117,7 @@ func (h *workerPoolHeartbeater) heartbeat(ctx context.Context) {
 			"host", h.hostname,
 			"pid", h.pid,
 		); err != nil {
-			return err
+			return fmt.Errorf("HSET heartbeat with key %s: %w", heartbeatKey, err)
 		}
 		return nil
 	})
@@ -128,10 +132,10 @@ func (h *workerPoolHeartbeater) removeHeartbeat(ctx context.Context) {
 
 	err := h.redisAdapter.WithPipeline(ctx, func(r redis.Redis) error {
 		if err := r.SRem(ctx, workerPoolsKey, h.workerPoolID); err != nil {
-			return err
+			return fmt.Errorf("SREM worker pool id %s: %w", h.workerPoolID, err)
 		}
 		if err := r.Del(ctx, heartbeatKey); err != nil {
-			return err
+			return fmt.Errorf("DEL heartbeat with key %s: %w", heartbeatKey, err)
 		}
 		return nil
 	})
