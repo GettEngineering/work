@@ -320,7 +320,7 @@ You'll see a view that looks like this:
 * Both normal queues and the scheduled queue are considered.
 * When a unique job is enqueued, we'll atomically set a redis key that includes the job name and arguments and enqueue the job.
 * After the job has been finished or put into dead queue, we'll delete that key to permit another job to be enqueued.
-* The unique key remains set while the job is on the queue, being processed, or sitting in the retry queue; it is removed only after the job completes or is moved to the dead queue.
+* The unique key remains set while the job is on the queue, being processed, or sitting in the retry queue; it is removed only after the job completes or is moved to the dead queue. Note that in the current implementation this Redis key is created with a 24-hour TTL, so it may expire before completion/dead, at which point another job with the same name/arguments can be enqueued.
 
 ### Periodic jobs
 
