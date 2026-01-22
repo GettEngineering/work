@@ -220,7 +220,7 @@ job, err = enqueuer.EnqueueUniqueInByKey("clear_cache", 300, work.Q{"object_id_"
 ```
 For information on how this map will be serialized to form a unique key, see (https://golang.org/pkg/encoding/json/#Marshal).
 
-Note: the unique Redis key that prevents duplicates is set atomically when the job is enqueued and remains set while the job is on the queue, being processed, or sitting in the retry queue. The key is removed only after the job finishes or is moved to the dead queue, at which point another job with the same name/arguments may be enqueued.
+Note: for `EnqueueUnique`, the unique Redis key is derived from the job name and its arguments; for `EnqueueUniqueByKey`, it is derived from the job name and the provided key map. The key is set atomically when the job is enqueued and is intended to remain set while the job is on the queue, being processed, or sitting in the retry queue. However, this unique key currently has a 24‑hour TTL; if it expires before the job finishes or is moved to the dead queue (for example, for very long‑running jobs or jobs scheduled more than 24 hours in the future), another job with the same name/arguments or name/key map may be enqueued.
 
 ### Periodic Enqueueing (Cron)
 
