@@ -100,9 +100,11 @@ func (e *Enqueuer) EnqueueIn(jobName string, secondsFromNow int64, args map[stri
 
 // EnqueueUnique enqueues a job unless a job is already enqueued with the same name and arguments.
 // The already-enqueued job can be in the normal work queue or in the scheduled job queue.
-// Once a worker begins processing a job, another job with the same name and arguments can be enqueued again.
-// Any failed jobs in the retry queue or dead queue don't count against the uniqueness -- so if a job fails and is retried, two unique jobs with the same name and arguments can be enqueued at once.
-// In order to add robustness to the system, jobs are only unique for 24 hours after they're enqueued. This is mostly relevant for scheduled jobs.
+// While a job is enqueued, being processed, or present in the retry queue, the unique lock is held
+// and another job with the same name and arguments cannot be enqueued. The unique key is removed
+// only after the job finishes (or is moved to the dead queue), at which point a new unique job may
+// be enqueued. In order to add robustness to the system, jobs are only unique for 24 hours after
+// they're enqueued — this is mostly relevant for scheduled jobs.
 // EnqueueUnique returns the job if it was enqueued and nil if it wasn't
 func (e *Enqueuer) EnqueueUnique(jobName string, args map[string]interface{}) (*Job, error) {
 	return e.EnqueueUniqueByKey(jobName, args, nil)
@@ -115,9 +117,11 @@ func (e *Enqueuer) EnqueueUniqueIn(jobName string, secondsFromNow int64, args ma
 
 // EnqueueUniqueByKey enqueues a job unless a job is already enqueued with the same name and key, updating arguments.
 // The already-enqueued job can be in the normal work queue or in the scheduled job queue.
-// Once a worker begins processing a job, another job with the same name and key can be enqueued again.
-// Any failed jobs in the retry queue or dead queue don't count against the uniqueness -- so if a job fails and is retried, two unique jobs with the same name and arguments can be enqueued at once.
-// In order to add robustness to the system, jobs are only unique for 24 hours after they're enqueued. This is mostly relevant for scheduled jobs.
+// While a job is enqueued, being processed, or present in the retry queue, the unique lock is held
+// and another job with the same name and key cannot be enqueued. The unique key is removed only after
+// the job finishes (or is moved to the dead queue), at which point a new unique job may be enqueued.
+// In order to add robustness to the system, jobs are only unique for 24 hours after they're enqueued —
+// this is mostly relevant for scheduled jobs.
 // EnqueueUniqueByKey returns the job if it was enqueued and nil if it wasn't
 func (e *Enqueuer) EnqueueUniqueByKey(jobName string, args map[string]interface{}, keyMap map[string]interface{}) (*Job, error) {
 	enqueue, job, err := e.uniqueJobHelper(jobName, args, keyMap)

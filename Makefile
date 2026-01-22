@@ -4,12 +4,12 @@ help:
 
 test-setup: ## Prepare infrastructure for tests
 	@echo "+ $@"
-	docker-compose up -d
+	docker compose up -d
 .PHONY: test-setup
 
 test-teardown: ## Bring down test infrastructure
 	@echo "+ $@"
-	docker-compose rm -fsv
+	docker compose rm -fsv
 .PHONY: test-teardown
 
 test-run: ## Run tests
