@@ -175,7 +175,11 @@ func TestEnqueueUnique(t *testing.T) {
 	assert.NotNil(t, job)
 }
 
-// Tests that unique jobs are removed only after job is done or put in dead queue.
+// Tests that unique jobs remain exclusive while the original is enqueued,
+// in-progress, or sitting in the retry queue, and are only cleared after
+// the job finishes or is moved to the dead queue. Specifically this test
+// ensures a duplicate enqueue is rejected while the job is retried and
+// allowed after the job is dead.
 func TestOrderEnqueueUnique(t *testing.T) {
 	pool := newTestPool(":6379")
 	ns := "work"
@@ -371,7 +375,10 @@ func TestEnqueueUniqueByKey(t *testing.T) {
 	assert.NotNil(t, job)
 }
 
-// Tests that unique by key jobs are removed only after job is done or put in dead queue.
+// Tests that unique-by-key jobs remain exclusive while the original is enqueued,
+// in-progress, or sitting in the retry queue, and are only cleared after the
+// job finishes or is moved to the dead queue. This mirrors the non-keyed test
+// but verifies behavior when uniqueness is defined by a provided key map.
 func TestOrderEnqueueUniqueByKey(t *testing.T) {
 	pool := newTestPool(":6379")
 	ns := "work"
@@ -466,6 +473,94 @@ func TestEnqueueUniqueInByKey(t *testing.T) {
 	assert.EqualValues(t, 1, j.ArgInt64("a"))
 	assert.NoError(t, j.ArgError())
 	assert.True(t, j.Unique)
+}
+
+// Tests that while a unique job is being processed, another job with
+// the same name and key cannot be enqueued (unique lock held).
+func TestEnqueueUniqueByKeyLockedWhileProcessing(t *testing.T) {
+	pool := newTestPool(":6379")
+	ns := "work"
+	cleanKeyspace(ns, pool)
+
+	enqueuer := NewEnqueuer(ns, pool)
+
+	// Enqueue a unique job by key.
+	job, err := enqueuer.EnqueueUniqueByKey("proc", Q{"a": 1}, Q{"key": "123"})
+	require.NoError(t, err)
+	require.NotNil(t, job)
+
+	started := make(chan struct{})
+	done := make(chan struct{})
+
+	wp := NewWorkerPool(TestContext{}, 1, ns, pool)
+	wp.JobWithOptions("proc", JobOptions{Priority: 1, MaxFails: 1}, func(job *Job) error {
+		close(started)
+		<-done
+		return nil
+	})
+
+	wp.Start()
+
+	// Wait for the job to be started (moved to in-progress and handler invoked).
+	select {
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "timed out waiting for job to start")
+	case <-started:
+	}
+
+	// While the original is processing, we should NOT be able to enqueue another
+	// job with the same unique key.
+	job2, err := enqueuer.EnqueueUniqueByKey("proc", Q{"a": 2}, Q{"key": "123"})
+	assert.NoError(t, err)
+	assert.Nil(t, job2)
+
+	close(done)
+	wp.Drain()
+	wp.Stop()
+}
+
+// Tests that while a unique job (keyed by arguments) is being processed,
+// another job with the same name and arguments cannot be enqueued (unique lock held).
+func TestEnqueueUniqueLockedWhileProcessing(t *testing.T) {
+	pool := newTestPool(":6379")
+	ns := "work"
+	cleanKeyspace(ns, pool)
+
+	enqueuer := NewEnqueuer(ns, pool)
+
+	// Enqueue a unique job (uniqueness based on args).
+	job, err := enqueuer.EnqueueUnique("proc", Q{"a": 1})
+	require.NoError(t, err)
+	require.NotNil(t, job)
+
+	started := make(chan struct{})
+	done := make(chan struct{})
+
+	wp := NewWorkerPool(TestContext{}, 1, ns, pool)
+	wp.JobWithOptions("proc", JobOptions{Priority: 1, MaxFails: 1}, func(job *Job) error {
+		close(started)
+		<-done
+		return nil
+	})
+
+	wp.Start()
+
+	// Wait for the job handler to start running.
+	select {
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "timed out waiting for job to start")
+	case <-started:
+	}
+
+	// While the original is processing, attempting to enqueue the same args
+	// should be rejected.
+	job2, err := enqueuer.EnqueueUnique("proc", Q{"a": 1})
+	assert.NoError(t, err)
+	assert.Nil(t, job2)
+
+	close(done)
+	wp.Drain()
+	wp.Stop()
 }
 
 func TestRunEnqueueUniqueInByKey(t *testing.T) {

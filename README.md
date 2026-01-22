@@ -220,6 +220,8 @@ job, err = enqueuer.EnqueueUniqueInByKey("clear_cache", 300, work.Q{"object_id_"
 ```
 For information on how this map will be serialized to form a unique key, see (https://golang.org/pkg/encoding/json/#Marshal).
 
+Note: the unique Redis key that prevents duplicates is set atomically when the job is enqueued and remains set while the job is on the queue, being processed, or sitting in the retry queue. The key is removed only after the job finishes or is moved to the dead queue, at which point another job with the same name/arguments may be enqueued.
+
 ### Periodic Enqueueing (Cron)
 
 You can periodically enqueue jobs on your gocraft/work cluster using your worker pool. The [scheduling specification](https://godoc.org/github.com/robfig/cron#hdr-CRON_Expression_Format) uses a Cron syntax where the fields represent seconds, minutes, hours, day of the month, month, and week of the day, respectively. Even if you have multiple worker pools on different machines, they'll all coordinate and only enqueue your job once.
@@ -318,6 +320,7 @@ You'll see a view that looks like this:
 * Both normal queues and the scheduled queue are considered.
 * When a unique job is enqueued, we'll atomically set a redis key that includes the job name and arguments and enqueue the job.
 * After the job has been finished or put into dead queue, we'll delete that key to permit another job to be enqueued.
+* The unique key remains set while the job is on the queue, being processed, or sitting in the retry queue; it is removed only after the job completes or is moved to the dead queue.
 
 ### Periodic jobs
 
